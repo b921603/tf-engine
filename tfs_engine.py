@@ -119,18 +119,20 @@ def eudic_upload(kind, filename, payload, mime):
     timeout, tries = ((int(os.environ.get("TFS_MEDIA_TIMEOUT", "900")), 2)
                       if big else (180, 6))
     for i in range(tries):
+        busy5 = False
         try:
             r = req("POST", f"{EUDIC}/ting/UploadTingFile?type={kind}",
                     files=files, timeout=timeout)
             j = json.loads(r.text or "{}")
             if j.get("success") and (j.get("fileId") or j.get("result")):
                 return j.get("fileId") or j.get("result").split("/")[-1]
+            busy5 = "处理程序" in (r.text or "") or "还在处理" in (r.text or "")
             log(f"  upload try{i}: {(r.text or '')[:100]}")
         except AuthError:
             raise
         except Exception as e:
             log(f"  upload try{i} err: {str(e)[:70]}")
-        time.sleep(min(3 + 3 * i, 18))
+        time.sleep(45 if busy5 else min(3 + 3 * i, 18))
     return None
 
 
@@ -227,8 +229,57 @@ def ensure_channels(dry=False):
         made.append(nm)
         log(f"  create {nm}: {r.status_code} {(r.text or '')[:60]}")
         time.sleep(GAP)
+    if not dry:
+        ensure_group()
     return made
 
+
+TFS_GROUP = os.environ.get("TFS_GROUP_NAME", "Tim Ferriss Show")
+
+
+def ensure_group():
+    """Bind every TFS channel into one channel-group. Eudic groups are
+    ChannelType-2 channel entities (reverse-engineered from /Scripts/group.js:
+    CreatePrivateChannel?itemtype=7 → AddChannelsToPrivateGroup{groupId,channelIds})."""
+    try:
+        gl = (req("POST", f"{EUDIC}/ting/GetPrivateGroups?withDefault=false",
+                  data="", timeout=40).json()
+              .get("channelList", {}).get("UploadedChannels", []))
+        grp = next((c for c in gl if c.get("Name") == TFS_GROUP), None)
+        if not grp:
+            r = req("POST", f"{EUDIC}/ting/CreatePrivateChannel?itemtype=7",
+                    data={"name": TFS_GROUP, "thumb": "", "channelType": "2",
+                          "description": "The Tim Ferriss Show 全集搬運頻道分組"}, timeout=40)
+            log(f"  group create: {r.status_code} {(r.text or '')[:60]}")
+            time.sleep(GAP)
+            gl = (req("POST", f"{EUDIC}/ting/GetPrivateGroups?withDefault=false",
+                      data="", timeout=40).json()
+                  .get("channelList", {}).get("UploadedChannels", []))
+            grp = next((c for c in gl if c.get("Name") == TFS_GROUP), None)
+            if not grp:
+                log("  group create failed — skip (retry next pass)")
+                return
+        gid = grp["Id"]
+        ids = [c["Id"] for c in channel_list()
+               if c.get("Name", "").startswith("The Tim Ferriss Show")]
+        r = req("POST", f"{EUDIC}/ting/AddChannelsToPrivateGroup",
+                data=[("groupId", gid)] + [("channelIds", i) for i in ids], timeout=60)
+        ok = '"success":true' in (r.text or "").replace(" ", "")
+        if not ok:
+            # idempotent refusal when already bound — verify via group count
+            gl2 = (req("POST", f"{EUDIC}/ting/GetPrivateGroups?withDefault=false",
+                       data="", timeout=40).json()
+                   .get("channelList", {}).get("UploadedChannels", []))
+            cnt = next((c.get("TotalMediaCount") for c in gl2 if c.get("Id") == gid), None)
+            ok = cnt is not None and cnt >= len(ids)
+            if ok:
+                log(f"  group bind: already bound ({cnt}/{len(ids)}) — OK")
+        if ok:
+            log(f"  group bind {len(ids)} channels → {TFS_GROUP}: OK")
+        else:
+            log(f"  group bind rejected: {(r.text or '')[:80]}")
+    except Exception as ex:
+        log(f"  group ensure err: {str(ex)[:80]}")
 
 
 def list_articles(cid):
@@ -338,7 +389,7 @@ def post_article(cid, mid, title, lrc, desc, thumb_fid, intros=""):
             r = req("POST", f"{EUDIC}/ting/uploadprivatemedia", data=data, timeout=90)
             if r.status_code == 200 and '"code":200' in (r.text or "").replace(" ", ""):
                 return True
-            busy = "还在处理" in (r.text or "")
+            busy = ("还在处理" in (r.text or "")) or ("处理程序" in (r.text or ""))
             log(f"  post try{k}: {r.status_code} {(r.text or '')[:80]}")
         except AuthError:
             raise
@@ -1204,7 +1255,7 @@ def sync_one(e, done, omap, dry=False):
                 okp = True
                 break
             log(f"  create try{k}: {r.status_code} {(r.text or '')[:70]}")
-            time.sleep(20 + 15 * k)
+            time.sleep(60 if "处理程序" in (r.text or "") else 20 + 15 * k)
         ok_all = ok_all and okp
         log(f"  ✔ part {i+1}/{len(parts)} create={'OK' if okp else 'FAIL'}")
     if ok_all and parts:
@@ -1805,6 +1856,8 @@ def main():
     sp = sub.add_parser("channels")
     sp.add_argument("--ensure", action="store_true")
     sp.add_argument("--dry-run", action="store_true")
+    sp = sub.add_parser("groups")
+    sp.add_argument("--ensure", action="store_true")
     a = ap.parse_args()
     t0 = time.time()
     DISPATCH = {
@@ -1822,6 +1875,7 @@ def main():
                              print(json.dumps(
                                  [(a_, b_, c_) for a_, b_, c_ in tfs_channels()],
                                  ensure_ascii=False, indent=1))),
+        "groups": lambda: ensure_group(),
     }
     try:
         DISPATCH[a.cmd]()
