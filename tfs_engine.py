@@ -1424,12 +1424,20 @@ def rotate_cache_backfill(limit=0):
             arts[t] = (c, mid)
     rc = rj(art_path("rotate_cache.json"), {})
     omap = official_map()
-    todo = [t for t in sorted(arts) if t not in rc]
+    live_mid = {t: m for t, (c, m) in arts.items()}
+    todo = [t for t in sorted(arts)
+            if t not in rc or rc[t].get("mid") != live_mid.get(t)
+            or not rc[t].get("lrc")]
     if limit:
         todo = todo[:limit]
     log(f"rotate backfill: {len(todo)} to fetch (have {len(rc)})")
     for i, t in enumerate(todo):
         c, mid = arts[t]
+        old_rec = rc.get(t) or {}
+        stale = (old_rec.get("mid") != mid or not old_rec.get("lrc"))
+        if not stale:
+            rc[t]["mid"] = mid              # keep fresh pointer anyway
+            continue
         stt, txt = get_edit_page(c, mid)
         if stt != 200 or not txt or len(txt) < 3000:
             log(f"  [{i+1}] ✗ {t[:44]}")
@@ -1437,7 +1445,7 @@ def rotate_cache_backfill(limit=0):
         info = parse_edit_page(txt)
         rc[t] = {"mid": mid, "cid": c, "title": t, "lrc": info["lrc"],
                  "desc": info["desc"], "intros": info["intros"],
-                 "image": rss_image_for(t, omap)}
+                 "image": old_rec.get("image") or rss_image_for(t, omap)}
         if (i + 1) % 25 == 0:
             wj(art_path("rotate_cache.json"), rc)
             log(f"  [{i+1}/{len(todo)}] cached")
@@ -1579,7 +1587,20 @@ def job_audit(limit=0):
         log("rotate_cache missing — run bootstrap first")
         return
     n = {"checked": 0, "lrc_drift": [], "visible_ts": [], "no_desc": [],
-         "no_fid": [], "missing": []}
+         "no_cover": [], "missing": []}
+    # cover truth = listing img-zlg (edit-page thumb_fid is unreliable)
+    nocover = set()
+    try:
+        for _a, _b, c in tfs_channels():
+            r = req("GET", f"{EUDIC}/ting/GetPrivateMedias"
+                           f"?sortby=0&page=0&channelId={c}", timeout=45)
+            for x in re.split(r'<div class="dragBox">', r.text or "")[1:]:
+                mid = re.search(r'media_id"[^>]*data="([^"]+)"', x)
+                z = re.search(r'class="img-zlg"[^>]*src="([^"]*)"', x)
+                if mid and z and "media_default.png" in z.group(1):
+                    nocover.add(mid.group(1))
+    except Exception as ex:
+        log(f"cover scan skipped: {str(ex)[:80]}")
     t0 = time.time()
     budget = 2700
     for i, (title, rec) in enumerate(sorted(rc.items())):
@@ -1600,6 +1621,12 @@ def job_audit(limit=0):
         n["checked"] += 1
         want = len(lrc_sentences(rec.get("lrc", "")))
         got = len(lrc_sentences(info["lrc"]))
+        if want >= 5 and got == 0:
+            # WAF flake → one patient re-read before flagging drift
+            time.sleep(15)
+            stt, txt = get_edit_page(cid, mid)
+            info = parse_edit_page(txt) if stt == 200 and txt else {}
+            got = len(lrc_sentences(info["lrc"]))
         if want >= 5 and abs(got - want) / max(want, 1) > 0.05:
             n["lrc_drift"].append({"title": title, "want": want, "got": got})
         bad = [b for b in lrc_sentences(info["lrc"])[:200] if FINE_TS.match(b)]
@@ -1607,15 +1634,15 @@ def job_audit(limit=0):
             n["visible_ts"].append({"title": title, "lines": bad[:3]})
         if MARK not in info["desc"]:
             n["no_desc"].append(title)
-        if not info["thumb_fid"]:
-            n["no_fid"].append(title)
+        if mid in nocover:
+            n["no_cover"].append(title)
         time.sleep(0.3)
     bad = sum(len(v) for v in (n["lrc_drift"], n["visible_ts"],
-                               n["no_desc"], n["no_fid"], n["missing"]))
+                               n["no_desc"], n["no_cover"], n["missing"]))
     body = (f"🔬 每月漂移稽核 {time.strftime('%F %T')}\n"
             f"檢查 {n['checked']}/{len(rc)}｜LRC 漂移 {len(n['lrc_drift'])}"
             f"｜可見時間戳 {len(n['visible_ts'])}｜缺導讀 {len(n['no_desc'])}"
-            f"｜缺封面 fid {len(n['no_fid'])}｜缺 {len(n['missing'])}\n"
+            f"｜缺封面 {len(n['no_cover'])}｜缺 {len(n['missing'])}\n"
             + ("✅ 全綠——頻道忠實度驗證通過。" if not bad else
                "⚠️ 有偏差——回對話請 agent 處理：" +
                json.dumps({k: v[:3] for k, v in n.items()
