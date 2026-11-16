@@ -1,0 +1,116 @@
+name: tff-sync
+# Hourly: channels ensure → bootstrap drain (oldest-first, batched) →
+# RSS diff sync (new episodes) → AI-subtitle subsync finishing queue.
+on:
+  schedule:
+    - cron: "27 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Only process episodes whose title contains this. Bypasses done/match guards — supervised tests only."
+        required: false
+        default: ""
+      batch:
+        description: "bootstrap batch size this run (0 = env default 15)"
+        required: false
+        default: ""
+permissions:
+  contents: write
+concurrency:
+  group: tff-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: enable BBR (counters lossy-path throughput collapse; measured 24x)
+        run: |
+          sudo modprobe tcp_bbr || true
+          sudo sysctl -w net.core.default_qdisc=fq || true
+          sudo sysctl -w net.ipv4.tcp_congestion_control=bbr || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: restore state (done/ledger/rotate_cache/…)
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: tff-state-${{ github.run_id }}
+          restore-keys: tff-state-
+      - name: ensure channels exist
+        env:
+          EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
+          EUDIC_USER: ${{ secrets.EUDIC_USER }}
+          EUDIC_PASS: ${{ secrets.EUDIC_PASS }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TFS_BASE: ${{ github.workspace }}/state
+        run: python3 tfs_engine.py channels ensure
+      - name: bootstrap drain (oldest-first batch)
+        env:
+          EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
+          EUDIC_USER: ${{ secrets.EUDIC_USER }}
+          EUDIC_PASS: ${{ secrets.EUDIC_PASS }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TFS_BASE: ${{ github.workspace }}/state
+          TFS_BOOTSTRAP_BATCH: ${{ inputs.batch || '15' }}
+        run: python3 tfs_engine.py bootstrap --limit "${TFS_BOOTSTRAP_BATCH:-15}"
+      - name: run sync (new episodes)
+        env:
+          EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
+          EUDIC_USER: ${{ secrets.EUDIC_USER }}
+          EUDIC_PASS: ${{ secrets.EUDIC_PASS }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TFS_BASE: ${{ github.workspace }}/state
+          TFS_FORCE: ${{ inputs.force }}
+        run: |
+          if [ -n "$TFS_FORCE" ]; then
+            echo "force mode: $TFS_FORCE"
+            python3 tfs_engine.py sync --force "$TFS_FORCE" --newest
+          else
+            python3 tfs_engine.py sync --newest
+          fi
+      - name: finish AI subtitles (subsync finishing queue)
+        if: always()
+        env:
+          EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
+          EUDIC_USER: ${{ secrets.EUDIC_USER }}
+          EUDIC_PASS: ${{ secrets.EUDIC_PASS }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TFS_BASE: ${{ github.workspace }}/state
+        run: python3 tfs_engine.py subsync
+      - name: save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: tff-state-${{ github.run_id }}
+      - name: notify on failure
+        if: failure()
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, requests, os
+          rid = os.environ.get("RUN_ID", "unknown")
+          msg = {"topic": os.environ["NTFY_TOPIC"], "title": "TFF GA: sync failed",
+                 "priority": 4, "tags": ["rotating_light"],
+                 "message": ("GitHub Actions sync 失敗（run " + rid + "）。\n" +
+                             "查日誌：https://github.com/b921603/tff-sync/actions/run/" + rid +
+                             "\n常見原因：cookie 過期（同時會發 TFF GA: cookie expired）或上傳鏈路異常。")}
+          requests.post("https://ntfy.sh/", data=json.dumps(msg), timeout=20)
+          PY
+      - name: commit audit ledger (public trail)
+        run: |
+          git config user.name "tff-bot"
+          git config user.email "actions@users.noreply.github.com"
+          mkdir -p trail && cp -f state/sync_ledger.jsonl trail/ 2>/dev/null || true
+          git add trail/sync_ledger.jsonl 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "ledger: run ${{ github.run_id }} [skip ci]" && git pull --rebase && git push)

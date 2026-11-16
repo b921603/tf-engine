@@ -1,0 +1,4 @@
+state/
+rotstate/
+__pycache__/
+*.pyc

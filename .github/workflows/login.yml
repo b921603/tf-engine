@@ -1,0 +1,25 @@
+name: tff-login
+# Manual: password re-login → refresh EUDIC_COOKIE secret (204) → verify.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -q
+      - name: login & self-update secret
+        env:
+          EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
+          EUDIC_USER: ${{ secrets.EUDIC_USER }}
+          EUDIC_PASS: ${{ secrets.EUDIC_PASS }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TFS_BASE: ${{ github.workspace }}/state
+        run: python3 tfs_engine.py login
