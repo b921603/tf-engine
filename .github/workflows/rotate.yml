@@ -1,0 +1,60 @@
+name: tff-rotate
+# Hourly LRU re-POST (2 shards) — defeats the platform's fid GC +
+# render-cache expiry. Re-POSTs articles with cached byte-identical
+# lrc/desc/intros + a freshly uploaded official cover fid.
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    concurrency:
+      group: tff-rot-${{ matrix.shard }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: enable BBR
+        run: |
+          sudo modprobe tcp_bbr || true
+          sudo sysctl -w net.core.default_qdisc=fq || true
+          sudo sysctl -w net.ipv4.tcp_congestion_control=bbr || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: restore rotate cache (written by tff-sync)
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: tff-state-ro-${{ github.run_id }}
+          restore-keys: tff-state-
+      - name: restore per-shard LRU state
+        uses: actions/cache/restore@v4
+        with:
+          path: rotstate
+          key: tff-rot-${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: tff-rot-${{ matrix.shard }}-
+      - name: rotate shard
+        env:
+          EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
+          EUDIC_USER: ${{ secrets.EUDIC_USER }}
+          EUDIC_PASS: ${{ secrets.EUDIC_PASS }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TFS_BASE: ${{ github.workspace }}/state
+          TFS_ROTDIR: ${{ github.workspace }}/rotstate
+        run: python3 tfs_engine.py rotate --shard ${{ matrix.shard }}/2 --budget 1400
+      - name: save per-shard state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: rotstate
+          key: tff-rot-${{ matrix.shard }}-${{ github.run_id }}
