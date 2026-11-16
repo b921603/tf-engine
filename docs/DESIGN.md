@@ -17,3 +17,18 @@
 - **budget**：每集下載→轉檔→上傳→刪 conv（ok_all 後）；32k mono ≈ 24MB/h。
 - **wayback feed 快照**：`web.archive.org/web/{ts}id_/https://rss.art19.com/tim-ferriss-show`
   抓已刪集（CDX filter=statuscode:200 正常運作；此前誤判語法錯誤）。
+
+## 實證增補（2026-11-16 run#3 期間）
+
+- **audit 三誤報解剖**：①rotate_cache 記錄的 mid 可能是已刪 dup（list_articles title-key 遮蔽）
+  → backfill 改為「live mid ≠ cache mid 即刷新重抓」；②WAF 拉空 GET → audit 對 got=0 先 patient
+  re-read 一次再記 drift；③edit-page thumb_fid 永遠空（平台不再回填）→ 封面檢查改清單
+  img-zlg（media_default.png=缺封面）。修後沙盒實測 checked=4 bad=0。
+- **title-key 遮蔽是 dup 溫床**：list_articles 同名文章互相覆蓋；dup 掃描必用 dragBox 原始掃描
+  （raw_list）；本日 GA 重跑事故的 3 篇 dup 由此找出並清除。
+- **斷點續傳**：sync_one 以 expected_parts（RSS duration/SEG）對 count_channel_parts 判斷
+  「已存在分片→跳過」；全齊→already-complete 標記 done。reconcile_done 在 bootstrap/sync 開場
+  對帳（guid 缺但分片全齊→補 done），state 遺失自癒。
+- **AI 暫態結論**：BatchAiSubtitle 的「时长超过 60 分钟」在 45/48/60 分實測皆可於數分鐘後通過
+  → 引擎 patient-retry 10×45s＋「其余已成功」視為部分成功；AI 失敗不再記 terminal unsupported
+  （subsync 4 輪內自動重排）。
