@@ -536,6 +536,14 @@ def rss_items():
             continue
         enc = re.search(r'<enclosure[^>]*url="([^"]+)"', block)
         img = re.search(r'<itunes:image[^>]*href="([^"]+)"', block)
+        dm = re.search(r"<itunes:duration>([^<]+)</itunes:duration>", block)
+        dur = 0
+        if dm:
+            pp = dm.group(1).split(":")
+            try:
+                dur = int(pp[-1]) + 60 * int(pp[-2]) + (3600 * int(pp[-3]) if len(pp) > 2 else 0)
+            except Exception:
+                dur = 0
         pub = g("pubDate")
         try:
             import email.utils
@@ -545,7 +553,7 @@ def rss_items():
         items.append({"title": title, "guid": g("guid"), "ts": ts,
                       "date": time.strftime("%Y-%m-%d", time.gmtime(ts)) if ts else "",
                       "url": enc.group(1) if enc else "",
-                      "image": img.group(1) if img else "",
+                      "image": img.group(1) if img else "", "duration": dur,
                       "desc": g("description")})
     items.sort(key=lambda e: e["ts"] or 0)
     return items
@@ -910,6 +918,69 @@ def job_login():
 
 
 # ─────────────────────────── job: sync ───────────────────────────
+def raw_list(cid):
+    """[(title, mid)] unkeyed — dup-safe (list_articles is title-keyed and
+    silently merges same-title articles)."""
+    out, seen = [], set()
+    for sb in (0, 1):
+        for pg in range(24):
+            r = req("GET", f"{EUDIC}/ting/GetPrivateMedias"
+                           f"?sortby={sb}&page={pg}&channelId={cid}", timeout=45)
+            if not r.text:
+                break
+            got = 0
+            for x in re.split(r'<div class="dragBox">', r.text)[1:]:
+                tm = re.search(r'rl-title"[^>]*title="([^"]*)"', x)
+                mid = re.search(r'media_id"[^>]*data="([^"]+)"', x)
+                if tm and mid and mid.group(1) not in seen:
+                    out.append((html.unescape(tm.group(1)), mid.group(1)))
+                    seen.add(mid.group(1))
+                    got += 1
+            if not got:
+                break
+    return out
+
+
+def count_channel_parts(cid, title):
+    """How many parts of `title` already exist in the channel (any suffix)."""
+    want = norm_title(title)
+    return sum(1 for t, _m in raw_list(cid)
+               if norm_title(loose_rss_title(t)) == want)
+
+
+def expected_parts(e):
+    d = e.get("duration") or 0
+    return -(-d // SEG) if d else 0
+
+
+def reconcile_done(done):
+    """Mark RSS episodes done when all their parts already exist in any TFS
+    channel but the guid is missing from done.json (heals state loss and
+    partial crashes without dup risk)."""
+    items = rss_items()
+    by_c = {}
+    for _a, _b, c in tfs_channels():
+        by_c[c] = raw_list(c)
+    added, partial = 0, []
+    for e in items:
+        if not e["url"] or e["guid"] in done:
+            continue
+        want = norm_title(e["title"])
+        exp = expected_parts(e)
+        lst = by_c.get(cid_for(ep_num(e["title"]) or 1), [])
+        have = sum(1 for t, _m in lst if norm_title(loose_rss_title(t)) == want)
+        if exp and have >= exp:
+            done[e["guid"]] = {"title": f"{e['date']} {e['title']}".strip(),
+                               "at": time.strftime("%F %T"), "how": "reconcile"}
+            added += 1
+        elif have:
+            partial.append(f"#{ep_num(e['title'])} {have}/{exp or '?'}")
+    if added or partial:
+        wj(art_path("done.json"), done)
+        log(f"reconcile: +{added} done ｜ partial pending resume: {partial[:8]}")
+    return added
+
+
 def sync_one(e, done, omap, dry=False):
     """Full pipeline for one RSS episode: route → download → create →
     AI subtitle path → guard. Mutates `done`. Returns True if processed."""
@@ -966,7 +1037,22 @@ def sync_one(e, done, omap, dry=False):
     date = e["date"]
     ok_all = True
     media_first = ""
+    # crash-resume: skip parts that already exist in the channel
+    exp = expected_parts(e)
+    have = count_channel_parts(cid, title)
+    if exp and have >= exp:
+        done[e["guid"]] = {"title": f"{date} {title}".strip(),
+                           "at": time.strftime("%F %T"), "cid": cid,
+                           "how": "already-complete"}
+        wj(art_path("done.json"), done)
+        log(f"  ⊚ all {have} parts already exist — marked done")
+        return False
+    skip = have if (exp and have) else 0
+    if skip:
+        log(f"  ↻ resume: skipping existing parts 1..{skip} (have {have}/{exp or '?'})")
     for i, (pf, s0, plen) in enumerate(parts):
+        if i < skip:
+            continue
         t = title if len(parts) == 1 else f"{title}（{i+1}/{len(parts)}）"
         full = f"{date} {t}".strip()
         if dry:
@@ -995,8 +1081,15 @@ def sync_one(e, done, omap, dry=False):
                 "insertImage": "false", "mdChapterId": ""}
         okp = False
         for k in range(6):
-            r = req("POST", f"{EUDIC}/ting/uploadprivatemedia", data=data,
-                    timeout=90)
+            try:
+                r = req("POST", f"{EUDIC}/ting/uploadprivatemedia", data=data,
+                        timeout=90)
+            except AuthError:
+                raise
+            except Exception as ex:
+                log(f"  create try{k}: net err {str(ex)[:70]}")
+                time.sleep(20 + 15 * k)
+                continue
             if r.status_code == 200 and '"code":200' in (r.text or "").replace(" ", ""):
                 okp = True
                 break
@@ -1026,7 +1119,11 @@ def sync_one(e, done, omap, dry=False):
             long60 = batch_ai_subtitle(cid, mids)
         stage = "queued"
         if long60 or not mids:
-            stage = "unsupported" if long60 else "no-mids"
+            # transient AI queue window → RETRYABLE (subsync requeues ≤4 rounds)
+            stage = "queued"
+            long60 = False
+            if not mids:
+                stage = "no-mids"
         else:
             t0 = time.time()
             infos = []
@@ -1110,6 +1207,10 @@ def job_sync(force="", dry=False, newest=False):
             ntfy("TFF GA: seed suspects",
                  "首次部署種子完成；以下 RSS 集未能在頻道標題比對（請人工複核）：\n" +
                  "\n".join(t[:60] for t in suspect[:12]), prio=3)
+    try:
+        reconcile_done(done)
+    except Exception as ex:
+        log(f"reconcile skipped: {str(ex)[:100]}")
     ct = rj(art_path("ct_cache.json"), {"ts": 0, "titles": []})
     if time.time() - ct.get("ts", 0) > 1800:
         arts = {}
@@ -1136,7 +1237,13 @@ def job_sync(force="", dry=False, newest=False):
     slugs = None            # podscripts index — lazily fetched (legacy mode only)
     rc = rj(art_path("rotate_cache.json"), {})
     for e in todo:
-        sync_one(e, done, omap, dry)
+        try:
+            sync_one(e, done, omap, dry)
+        except Exception as ex:
+            log(f"  ✗ episode error (skip, retried next run): {str(ex)[:120]}")
+            ledger_append({"ts": time.strftime("%F %T"), "title": e["title"],
+                           "how": "episode-error", "err": str(ex)[:150]})
+            wj(art_path("done.json"), done)
     wj(art_path("rotate_cache.json"), rc)
     log("sync done")
 
@@ -1200,7 +1307,7 @@ def job_subsync():
     changed = False
     for guid, rec in list(done.items()):
         if rec.get("how") != "ai" or rec.get("ai_stage") in (
-                "highlighted", "unsupported", "failed"):
+                "highlighted", "failed"):
             continue
         title = rec.get("title", "")
         cid = rec.get("cid") or cid_for(ep_num(title) or 1)
@@ -1268,13 +1375,27 @@ def job_bootstrap(limit=0, dry=False):
         log(f"channels ensured: +{len(made)} ({', '.join(made[:3])}…)" if len(made) > 3
             else f"channels ensured: +{len(made)}")
     items = rss_items()
-    done = rj(art_path("done.json"), {})
+    done = rj(art_path("done.json"), None)
+    if done is None:
+        done, suspect = seed_done()
+        wj(art_path("done.json"), done)
+        log(f"seed: {len(done)} episodes matched from channels ｜ suspect {len(suspect)}")
     omap = official_map()
+    try:
+        reconcile_done(done)
+    except Exception as ex:
+        log(f"reconcile skipped: {str(ex)[:100]}")
     todo = [e for e in items if e["url"] and e["guid"] not in done][:batch]
     log(f"bootstrap: {len(todo)} oldest to build (done {len(done)})")
     t0 = time.time()
     for i, e in enumerate(todo):
-        sync_one(e, done, omap, dry)
+        try:
+            sync_one(e, done, omap, dry)
+        except Exception as ex:
+            log(f"  ✗ episode error (skip, retried next run): {str(ex)[:120]}")
+            ledger_append({"ts": time.strftime("%F %T"), "title": e["title"],
+                           "how": "episode-error", "err": str(ex)[:150]})
+            wj(art_path("done.json"), done)
         if time.time() - t0 > 5.2 * 3600:      # runner headroom
             log(f"bootstrap time budget reached at {i+1}/{len(todo)}")
             break
