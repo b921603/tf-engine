@@ -1491,10 +1491,15 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
         wj(art_path("done.json"), done)
         log(f"seed: {len(done)} episodes matched from channels ｜ suspect {len(suspect)}")
     omap = official_map()
-    try:
-        reconcile_done(done, items)
-    except Exception as ex:
-        log(f"reconcile skipped: {str(ex)[:100]}")
+    if os.environ.get("TFS_WORKER", "ga") == "box":
+        # box fast-path: reconcile's 9-channel scan is GA's job; reverse-drain
+        # sits hundreds of episodes away from GA's frontier (zero collision).
+        log("box fast-path: reconcile deferred to GA")
+    else:
+        try:
+            reconcile_done(done, items)
+        except Exception as ex:
+            log(f"reconcile skipped: {str(ex)[:100]}")
     undone = [e for e in items if e["url"] and e["guid"] not in done]
     if reverse:
         undone = list(reversed(undone))       # box drains from the newest side
