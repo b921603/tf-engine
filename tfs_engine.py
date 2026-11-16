@@ -9,6 +9,7 @@ import difflib
 import gzip
 import html
 import io
+import base64
 import json
 import os
 import re
