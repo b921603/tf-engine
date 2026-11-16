@@ -521,10 +521,52 @@ def auto_relogin():
 
 
 # ─────────────────────────── sources ───────────────────────────
+_RSS_MEMO = {"ts": 0.0, "items": None}
+
+
 def rss_items():
-    """[{title,guid,ts,date,url,image,duration,desc}] oldest-first (Art19 feed)."""
-    r = requests.get(RSS, headers=UA, timeout=120)
-    txt = r.text
+    """[{title,guid,ts,date,url,image,duration,desc}] oldest-first (Art19 feed).
+    Wrapped: in-process memo + state ETag/304 cache + stale fallback.
+    Empirical (2026-11-16 run#4): the 30 MB feed double-fetched per step
+    under WAF throttling stalls bootstrap 20+ min before its first log line."""
+    now = time.time()
+    if _RSS_MEMO["items"] and now - _RSS_MEMO["ts"] < 600:
+        return _RSS_MEMO["items"]
+    cache = rj(art_path("rss_cache.json"), {})
+    hdr = dict(UA)
+    if cache.get("etag"):
+        hdr["If-None-Match"] = cache["etag"]
+    if cache.get("lastmod"):
+        hdr["If-Modified-Since"] = cache["lastmod"]
+    try:
+        r = requests.get(RSS, headers=hdr, timeout=300)
+        if r.status_code == 304 and cache.get("items"):
+            _RSS_MEMO.update(ts=now, items=cache["items"])
+            log("  rss 304 — cached catalog reused")
+            return cache["items"]
+        txt = r.text
+        items = _parse_rss(txt)
+        wj(art_path("rss_cache.json"), {
+            "etag": r.headers.get("ETag", ""),
+            "lastmod": r.headers.get("Last-Modified", ""),
+            "ts": now, "items": items})
+        _RSS_MEMO.update(ts=now, items=items)
+        return items
+    except Exception as ex:
+        if cache.get("items"):
+            log(f"  rss fetch err ({str(ex)[:60]}) — stale cache fallback")
+            _RSS_MEMO.update(ts=now, items=cache["items"])
+            return cache["items"]
+        raise
+
+
+def _parse_rss(txt):
+    items = []
+    for block in re.findall(r"<item>(.*?)</item>", txt, re.S):
+        def g(tag, blk=block):
+            m = re.search(rf"<{tag}[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</{tag}>",
+                          blk, re.S)
+            return html.unescape(m.group(1)).strip() if m else ""
     items = []
     for block in re.findall(r"<item>(.*?)</item>", txt, re.S):
         def g(tag, blk=block):
@@ -953,11 +995,12 @@ def expected_parts(e):
     return -(-d // SEG) if d else 0
 
 
-def reconcile_done(done):
+def reconcile_done(done, items=None):
     """Mark RSS episodes done when all their parts already exist in any TFS
     channel but the guid is missing from done.json (heals state loss and
     partial crashes without dup risk)."""
-    items = rss_items()
+    if items is None:
+        items = rss_items()
     by_c = {}
     for _a, _b, c in tfs_channels():
         by_c[c] = raw_list(c)
@@ -1207,8 +1250,9 @@ def job_sync(force="", dry=False, newest=False):
             ntfy("TFF GA: seed suspects",
                  "首次部署種子完成；以下 RSS 集未能在頻道標題比對（請人工複核）：\n" +
                  "\n".join(t[:60] for t in suspect[:12]), prio=3)
+    items = rss_items()
     try:
-        reconcile_done(done)
+        reconcile_done(done, items)
     except Exception as ex:
         log(f"reconcile skipped: {str(ex)[:100]}")
     ct = rj(art_path("ct_cache.json"), {"ts": 0, "titles": []})
@@ -1382,7 +1426,7 @@ def job_bootstrap(limit=0, dry=False):
         log(f"seed: {len(done)} episodes matched from channels ｜ suspect {len(suspect)}")
     omap = official_map()
     try:
-        reconcile_done(done)
+        reconcile_done(done, items)
     except Exception as ex:
         log(f"reconcile skipped: {str(ex)[:100]}")
     todo = [e for e in items if e["url"] and e["guid"] not in done][:batch]
