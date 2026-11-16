@@ -48,7 +48,7 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           TFS_BASE: ${{ github.workspace }}/state
-        run: python3 tfs_engine.py channels ensure
+        run: python3 tfs_engine.py channels --ensure
       - name: bootstrap drain (oldest-first batch)
         env:
           EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
