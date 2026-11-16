@@ -1312,7 +1312,7 @@ def job_sync(force="", dry=False, newest=False):
         wj(art_path("done.json"), done)
         log(f"seed: {len(done)} episodes matched from channel ｜ "
             f"suspect {len(suspect)}: {suspect[:3]}")
-        if suspect:
+        if suspect and os.environ.get("TFS_WORKER", "ga") == "ga":
             ntfy("TFF GA: seed suspects",
                  "首次部署種子完成；以下 RSS 集未能在頻道標題比對（請人工複核）：\n" +
                  "\n".join(t[:60] for t in suspect[:12]), prio=3)
