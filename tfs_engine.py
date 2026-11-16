@@ -115,7 +115,8 @@ def eudic_upload(kind, filename, payload, mime):
     socket timeout and fewer tries to fit the workflow budget."""
     files = {"file": (filename, payload, mime)}
     big = kind != "thumb"
-    timeout, tries = (600, 3) if big else (180, 6)
+    timeout, tries = ((int(os.environ.get("TFS_MEDIA_TIMEOUT", "900")), 2)
+                      if big else (180, 6))
     for i in range(tries):
         try:
             r = req("POST", f"{EUDIC}/ting/UploadTingFile?type={kind}",
@@ -522,6 +523,71 @@ def auto_relogin():
 
 # ─────────────────────────── sources ───────────────────────────
 _RSS_MEMO = {"ts": 0.0, "items": None}
+
+
+# ─── co-worker claims: git-as-queue (GA oldest-first ⇄ box newest-first) ───
+GH_REPO = os.environ.get("TFS_GH_REPO", "b921603/tff-sync")
+CLAIM_TTL = 2 * 3600          # a claim older than this is expired
+
+
+def _gh_headers():
+    h = {"Accept": "application/vnd.github+json"}
+    if os.environ.get("GH_PAT"):
+        h["Authorization"] = "Bearer " + os.environ["GH_PAT"]
+    return h
+
+
+def fetch_claims():
+    """guid → (worker, ts) from trail/sandbox_claims.jsonl (repo HEAD)."""
+    url = f"https://raw.githubusercontent.com/{GH_REPO}/main/trail/sandbox_claims.jsonl"
+    try:
+        r = requests.get(url, headers=_gh_headers(), timeout=30)
+        if r.status_code != 200 or not r.text.strip():
+            return {}
+        out = {}
+        for line in r.text.splitlines():
+            try:
+                d = json.loads(line)
+                out[d["guid"]] = (d.get("worker", "?"), float(d.get("ts", 0)))
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return {}
+
+
+def write_claim(guid, worker=None):
+    """Append a claim line and commit (1 retry after rebase)."""
+    worker = worker or os.environ.get("TFS_WORKER", "ga")
+    api = f"https://api.github.com/repos/{GH_REPO}/contents/trail/sandbox_claims.jsonl"
+    line = json.dumps({"guid": guid, "worker": worker, "ts": time.time()},
+                      ensure_ascii=False) + "\n"
+    for attempt in (1, 2):
+        gr = requests.get(api + "?ref=main", headers=_gh_headers(), timeout=30)
+        if gr.status_code == 200:
+            body = base64.b64decode(gr.json().get("content", "") or "").decode("utf-8", "ignore")
+            body += line
+            sha = gr.json().get("sha")
+        elif gr.status_code == 404:
+            body, sha = line, None
+        else:
+            time.sleep(3); continue
+        pr = requests.put(api, headers=_gh_headers(), timeout=60, json={
+            "message": f"claim: {guid[:24]} by {worker}",
+            "content": base64.b64encode(body.encode()).decode(),
+            "sha": sha, "branch": "main"})
+        if pr.status_code in (200, 201):
+            return True
+        time.sleep(4)
+    return False
+
+
+def is_claimed_elsewhere(guid, claims=None):
+    claims = fetch_claims() if claims is None else claims
+    if guid not in claims:
+        return False
+    worker, ts = claims[guid]
+    return worker != os.environ.get("TFS_WORKER", "ga") and time.time() - ts < CLAIM_TTL
 
 
 def rss_items():
@@ -1409,7 +1475,7 @@ def job_subsync():
 
 
 # ─────────────────────────── job: bootstrap ───────────────────────────
-def job_bootstrap(limit=0, dry=False):
+def job_bootstrap(limit=0, dry=False, reverse=False):
     """Drain the backlog oldest-first: full create pipeline for every RSS
     episode not yet in done.json. rotate_cache self-fills via guard_inline
     registrations inside sync_one (no separate edit-page pass needed)."""
@@ -1429,10 +1495,23 @@ def job_bootstrap(limit=0, dry=False):
         reconcile_done(done, items)
     except Exception as ex:
         log(f"reconcile skipped: {str(ex)[:100]}")
-    todo = [e for e in items if e["url"] and e["guid"] not in done][:batch]
-    log(f"bootstrap: {len(todo)} oldest to build (done {len(done)})")
+    undone = [e for e in items if e["url"] and e["guid"] not in done]
+    if reverse:
+        undone = list(reversed(undone))       # box drains from the newest side
+    todo = undone[:batch]
+    claims = fetch_claims()
+    if claims:
+        todo = [e for e in todo if not is_claimed_elsewhere(e["guid"], claims)]
+        log(f"  claims honored: {len(claims)} active")
+    log(f"bootstrap: {len(todo)} to build ({'newest-first' if reverse else 'oldest-first'}, "
+        f"done {len(done)})")
     t0 = time.time()
     for i, e in enumerate(todo):
+        if is_claimed_elsewhere(e["guid"]):
+            log(f"  ⚭ {e['title'][:40]} claimed by co-worker — skip")
+            continue
+        if not dry:
+            write_claim(e["guid"])
         try:
             sync_one(e, done, omap, dry)
         except Exception as ex:
@@ -1708,6 +1787,7 @@ def main():
     sp = sub.add_parser("bootstrap")
     sp.add_argument("--limit", type=int, default=0)
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--reverse", action="store_true")
     sp = sub.add_parser("rotate")
     sp.add_argument("--shard", default="0/1")
     sp.add_argument("--budget", type=int, default=0)
@@ -1724,7 +1804,7 @@ def main():
     DISPATCH = {
         "auth": lambda: job_auth(),
         "sync": lambda: job_sync(force=a.force, dry=a.dry_run, newest=a.newest),
-        "bootstrap": lambda: job_bootstrap(a.limit, a.dry_run),
+        "bootstrap": lambda: job_bootstrap(a.limit, a.dry_run, a.reverse),
         "rotate": lambda: job_rotate(a.shard, a.budget or None),
         "keepalive": lambda: job_keepalive(),
         "audit": lambda: job_audit(a.limit),
