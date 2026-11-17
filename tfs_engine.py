@@ -16,7 +16,8 @@ import re
 import subprocess
 import sys
 import time
-import unicodedata
+import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import requests
 
@@ -48,6 +49,9 @@ def log(*a):
     print(f"[{time.strftime('%F %T')}] {s}", flush=True)
 
 
+_STATE_LOCK = threading.RLock()
+
+
 def ntfy(title, body, prio=3, progress=False):
     """progress=True → high-volume progress lane (NTFY_PROGRESS_TOPIC);
     alerts/keepalive/audit stay on the control lane (NTFY_TOPIC)."""
@@ -56,11 +60,12 @@ def ntfy(title, body, prio=3, progress=False):
         log("(ntfy disabled — no topic)")
         return
     try:
-        requests.post("https://ntfy.sh/", timeout=30, data=json.dumps({
-            "topic": topic, "title": title[:80], "message": body,
-            "priority": prio, "tags": ["robot"]}).encode(),
-            headers={"Content-Type": "application/json"})
-        log(f"→ ntfy[{topic.split('-')[0]}]: {title}")
+        with _STATE_LOCK:
+            requests.post("https://ntfy.sh/", timeout=30, data=json.dumps({
+                "topic": topic, "title": title[:80], "message": body,
+                "priority": prio, "tags": ["robot"]}).encode(),
+                headers={"Content-Type": "application/json"})
+            log(f"→ ntfy[{topic.split('-')[0]}]: {title}")
     except Exception as e:
         log(f"ntfy err: {str(e)[:80]}")
 
@@ -1013,9 +1018,10 @@ def rj(p, d=None):
 
 
 def wj(p, o):
-    tmp = p + ".tmp"
-    json.dump(o, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
-    os.replace(tmp, p)
+    with _STATE_LOCK:
+        tmp = p + ".tmp"
+        json.dump(o, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
+        os.replace(tmp, p)
 
 
 def art_path(name):
@@ -1023,8 +1029,9 @@ def art_path(name):
 
 
 def ledger_append(rec):
-    with open(art_path("sync_ledger.jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    with _STATE_LOCK:
+        with open(art_path("sync_ledger.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def audio_lost():
@@ -1535,6 +1542,53 @@ def job_subsync():
 
 
 # ─────────────────────────── job: bootstrap ───────────────────────────
+def _episode_worker(e, done, omap, dry):
+    """Thread body for the ordered-parallel drain. Returns (completed, err).
+    `completed` = guid landed in done.json (any failure path leaves it out)."""
+    try:
+        sync_one(e, done, omap, dry)
+        return (e["guid"] in done, "")
+    except AuthError:
+        try:
+            with _STATE_LOCK:
+                auto_relogin()
+            sync_one(e, done, omap, dry)
+            return (e["guid"] in done, "")
+        except Exception as ex:
+            return (False, str(ex)[:150])
+    except Exception as ex:
+        return (False, str(ex)[:150])
+
+
+def enforce_channel_order(cids):
+    """Post-drain display-order correction: parallel landings can interleave
+    during busy windows — re-sort each channel by (episode, part) so the
+    visible episode order always stays strict."""
+    for cid in cids:
+        try:
+            rows = raw_list(cid)
+            if not rows:
+                continue
+            def _key(item):
+                t, _m = item
+                n = ep_num(loose_rss_title(t))
+                pm = re.search(r"（(\d+)/(\d+)）", t)
+                return (n if n else 10 ** 6, int(pm.group(1)) if pm else 1)
+            want = [m for _t, m in sorted(rows, key=_key)]
+            have = [m for _t, m in rows]
+            if want == have:
+                continue
+            r = req("POST", f"{EUDIC}/ting/OrderPriveteMedia",
+                    data=[("channelId", cid)] + [("mediaIds", m) for m in want],
+                    timeout=60)
+            ok = '"success":true' in (r.text or "").replace(" ", "")
+            log(f"  ↕ order fix {cid[:8]}…: {len(want)} 篇 → "
+                f"{'OK' if ok else (r.text or '')[:60]}")
+            time.sleep(GAP)
+        except Exception as ex:
+            log(f"  order fix err {cid[:8]}: {str(ex)[:80]}")
+
+
 def job_bootstrap(limit=0, dry=False, reverse=False):
     """Drain the backlog oldest-first: full create pipeline for every RSS
     episode not yet in done.json. rotate_cache self-fills via guard_inline
@@ -1571,23 +1625,107 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
     log(f"bootstrap: {len(todo)} to build ({'newest-first' if reverse else 'oldest-first'}, "
         f"done {len(done)})")
     t0 = time.time()
-    for i, e in enumerate(todo):
-        if is_claimed_elsewhere(e["guid"]):
-            log(f"  ⚭ {e['title'][:40]} claimed by co-worker — skip")
-            continue
-        if not dry:
-            write_claim(e["guid"])
+    K_MAX = max(1, int(os.environ.get("TFS_GOV_MAX", "3")))
+    K = max(1, min(K_MAX, int(os.environ.get("TFS_PARALLEL", "1"))))
+    if K == 1:
+        for i, e in enumerate(todo):
+            if is_claimed_elsewhere(e["guid"]):
+                log(f"  ⚭ {e['title'][:40]} claimed by co-worker — skip")
+                continue
+            if not dry:
+                write_claim(e["guid"])
+            try:
+                sync_one(e, done, omap, dry)
+            except Exception as ex:
+                log(f"  ✗ episode error (skip, retried next run): {str(ex)[:120]}")
+                ledger_append({"ts": time.strftime("%F %T"), "title": e["title"],
+                               "how": "episode-error", "err": str(ex)[:150]})
+                wj(art_path("done.json"), done)
+            if time.time() - t0 > 5.2 * 3600:      # runner headroom
+                log(f"bootstrap time budget reached at {i+1}/{len(todo)}")
+                break
+        log(f"bootstrap pass done: done total {len(done)}")
+    else:
+        # ── ordered-parallel drain: episodes dispatched strictly in drain
+        #    order; K workers build concurrently (AIMD governor); failed
+        #    episodes re-run in a serial in-order retry lane — never skipped.
+        cids = set()
+        for e in todo:
+            try:
+                cids.add(cid_for(ep_num(e["title"]) or 1))
+            except Exception:
+                pass
+        cids = sorted(cids)
+        failed, inflight, streak = [], {}, 0
+        idx = 0
+        pool = ThreadPoolExecutor(max_workers=K_MAX)
         try:
-            sync_one(e, done, omap, dry)
+            while idx < len(todo) or inflight:
+                while (idx < len(todo) and len(inflight) < K
+                       and time.time() - t0 <= 5.2 * 3600):
+                    e = todo[idx]; idx += 1
+                    if is_claimed_elsewhere(e["guid"]):
+                        log(f"  ⚭ {e['title'][:40]} claimed by co-worker — skip")
+                        continue
+                    if not dry:
+                        write_claim(e["guid"])
+                    inflight[pool.submit(_episode_worker, e, done, omap, dry)] = e
+                if not inflight:
+                    break
+                fin, _nd = wait(list(inflight), timeout=8,
+                                return_when=FIRST_COMPLETED)
+                for f in fin:
+                    e = inflight.pop(f)
+                    try:
+                        okc, err = f.result()
+                    except Exception as ex:
+                        okc, err = False, str(ex)[:150]
+                    if okc:
+                        streak += 1
+                        if streak >= 3 and K < K_MAX:
+                            K += 1; streak = 0
+                            log(f"  ⚙ governor: 3 clean → parallelism {K}")
+                    else:
+                        streak = 0
+                        if K > 1:
+                            K -= 1
+                            log(f"  ⚙ governor: failure → parallelism {K}")
+                        failed.append((e, err))
+            pool.shutdown(wait=True)
         except Exception as ex:
-            log(f"  ✗ episode error (skip, retried next run): {str(ex)[:120]}")
-            ledger_append({"ts": time.strftime("%F %T"), "title": e["title"],
-                           "how": "episode-error", "err": str(ex)[:150]})
+            log(f"  ⚠ parallel drain error → serial fallback: {str(ex)[:110]}")
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            for e in todo[idx:] + list(inflight.values()):
+                try:
+                    sync_one(e, done, omap, dry)
+                except Exception as ex2:
+                    ledger_append({"ts": time.strftime("%F %T"), "title": e["title"],
+                                   "how": "episode-error", "err": str(ex2)[:150]})
+        if failed and not dry:
+            log(f"  ↻ retry lane: {len(failed)} episode(s) re-attempted in strict order")
+            for e, err in failed:
+                if e["guid"] in done:
+                    continue
+                if time.time() - t0 > 5.2 * 3600:
+                    ledger_append({"ts": time.strftime("%F %T"), "title": e["title"],
+                                   "how": "pending-retry", "err": err[:150]})
+                    continue
+                log(f"  ↻ retry #{ep_num(e['title'])} {e['title'][:50]}")
+                try:
+                    sync_one(e, done, omap, dry)
+                except Exception as ex:
+                    ledger_append({"ts": time.strftime("%F %T"), "title": e["title"],
+                                   "how": "pending-retry", "err": str(ex)[:150]})
             wj(art_path("done.json"), done)
-        if time.time() - t0 > 5.2 * 3600:      # runner headroom
-            log(f"bootstrap time budget reached at {i+1}/{len(todo)}")
-            break
-    log(f"bootstrap pass done: done total {len(done)}")
+            still = [e["title"][:44] for e, _err in failed if e["guid"] not in done]
+            if still:
+                log(f"  ↻ residual {len(still)}（下一輪最前重試，順序不變）: {still[:5]}")
+        if not dry and cids:
+            enforce_channel_order(cids)
+        log(f"bootstrap pass done: done total {len(done)}")
 
 
 def loose_rss_title(ch_title):
