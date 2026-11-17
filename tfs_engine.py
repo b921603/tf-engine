@@ -338,8 +338,14 @@ def seed_done():
     """Fresh state → mark every RSS episode that already exists in any TFS
     channel (exact or loose) as done. Returns (done, suspect)."""
     arts = {}
-    for _a, _b, c in tfs_channels():
-        arts.update(list_articles(c))
+    chans = tfs_channels()
+    for i, (_a, _b, c) in enumerate(chans):
+        try:
+            got = list_articles(c)
+            arts.update(got)
+            log(f"seed: scanned {ch_name(_a, _b)} ({i+1}/{len(chans)}): {len(got)} articles")
+        except Exception as ex:
+            log(f"seed: scan {ch_name(_a, _b)} failed ({str(ex)[:60]}) — skip channel")
     have = {norm_title(t) for t in arts}
     done = {}
     suspect = []
@@ -1132,8 +1138,19 @@ def reconcile_done(done, items=None):
     if items is None:
         items = rss_items()
     by_c = {}
-    for _a, _b, c in tfs_channels():
-        by_c[c] = raw_list(c)
+    chans = tfs_channels()
+    t_r0 = time.time()
+    rbudget = int(os.environ.get("TFS_RECONCILE_BUDGET", "900"))
+    for i, (_a, _b, c) in enumerate(chans):
+        if by_c and time.time() - t_r0 > rbudget:
+            log(f"reconcile: budget {rbudget}s reached at {i+1}/{len(chans)} — partial data")
+            break
+        try:
+            rows = raw_list(c)
+            by_c[c] = rows
+            log(f"reconcile: scanned {ch_name(_a, _b)} ({i+1}/{len(chans)}): {len(rows)} rows")
+        except Exception as ex:
+            log(f"reconcile: scan {ch_name(_a, _b)} failed ({str(ex)[:60]}) — skip channel")
     added, partial = 0, []
     for e in items:
         if not e["url"] or e["guid"] in done:
@@ -1374,6 +1391,7 @@ def sync_one(e, done, omap, dry=False):
 def job_sync(force="", dry=False, newest=False):
     items = rss_items()
     done = rj(art_path("done.json"), None)
+    log(f"state: done={len(done) if done else 'MISSING → seeding'}")
     if done is None:
         done, suspect = seed_done()
         wj(art_path("done.json"), done)
