@@ -50,7 +50,7 @@ jobs:
           NTFY_PROGRESS_TOPIC: ${{ secrets.NTFY_PROGRESS_TOPIC }}
           TFS_MEDIA_TIMEOUT: "2700"
           TFS_AUDIO_BITRATE: "16k"
-          TFS_PARALLEL: "1"
+          TFS_PARALLEL: "2"
           TFS_GOV_MAX: "3"
           TFS_BASE: ${{ github.workspace }}/state
         run: python3 tfs_engine.py channels --ensure
@@ -64,7 +64,7 @@ jobs:
           NTFY_PROGRESS_TOPIC: ${{ secrets.NTFY_PROGRESS_TOPIC }}
           TFS_MEDIA_TIMEOUT: "2700"
           TFS_AUDIO_BITRATE: "16k"
-          TFS_PARALLEL: "1"
+          TFS_PARALLEL: "2"
           TFS_GOV_MAX: "3"
           TFS_BASE: ${{ github.workspace }}/state
           TFS_BOOTSTRAP_BATCH: ${{ inputs.batch || '15' }}
@@ -79,7 +79,7 @@ jobs:
           NTFY_PROGRESS_TOPIC: ${{ secrets.NTFY_PROGRESS_TOPIC }}
           TFS_MEDIA_TIMEOUT: "2700"
           TFS_AUDIO_BITRATE: "16k"
-          TFS_PARALLEL: "1"
+          TFS_PARALLEL: "2"
           TFS_GOV_MAX: "3"
           TFS_BASE: ${{ github.workspace }}/state
           TFS_FORCE: ${{ inputs.force }}
@@ -101,7 +101,7 @@ jobs:
           NTFY_PROGRESS_TOPIC: ${{ secrets.NTFY_PROGRESS_TOPIC }}
           TFS_MEDIA_TIMEOUT: "2700"
           TFS_AUDIO_BITRATE: "16k"
-          TFS_PARALLEL: "1"
+          TFS_PARALLEL: "2"
           TFS_GOV_MAX: "3"
           TFS_BASE: ${{ github.workspace }}/state
         run: python3 tfs_engine.py subsync
@@ -118,7 +118,7 @@ jobs:
           NTFY_PROGRESS_TOPIC: ${{ secrets.NTFY_PROGRESS_TOPIC }}
           TFS_MEDIA_TIMEOUT: "2700"
           TFS_AUDIO_BITRATE: "16k"
-          TFS_PARALLEL: "1"
+          TFS_PARALLEL: "2"
           TFS_GOV_MAX: "3"
           RUN_ID: ${{ github.run_id }}
         run: |
