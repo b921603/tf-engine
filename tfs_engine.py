@@ -339,7 +339,12 @@ def seed_done():
     channel (exact or loose) as done. Returns (done, suspect)."""
     arts = {}
     chans = tfs_channels()
+    t_s0 = time.time()
+    sbudget = int(os.environ.get("TFS_RECONCILE_BUDGET", "900"))
     for i, (_a, _b, c) in enumerate(chans):
+        if arts and time.time() - t_s0 > sbudget:
+            log(f"seed: budget {sbudget}s reached at {i+1}/{len(chans)} — partial seed")
+            break
         try:
             got = list_articles(c)
             arts.update(got)
