@@ -24,7 +24,7 @@ jobs:
           echo "💓 $(date -u '+%F %T') UTC run=${{ github.run_id }}" >> .heartbeat
           tail -n 200 .heartbeat > .heartbeat.tmp && mv .heartbeat.tmp .heartbeat
           git add .heartbeat
-          git diff --cached --quiet || (git commit -m "💓 keepalive [skip ci]" && git pull --rebase && git push)
+          git diff --cached --quiet || (git commit -m "💓 keepalive" && git pull --rebase && git push)
       - name: ntfy ping
         env:
           EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
