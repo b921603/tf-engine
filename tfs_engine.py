@@ -197,11 +197,17 @@ def tfs_channels():
     return out
 
 
+_CID_BY_NAME = {}
+
 def cid_for(num):
     a, b = ch_range_for(num)
     pref = ch_name(a, b)
+    hit = _CID_BY_NAME.get(pref)
+    if hit:
+        return hit
     for c in channel_list():
         if html.unescape(c["Name"]) == pref:
+            _CID_BY_NAME[pref] = c["Id"]
             return c["Id"]
     raise RuntimeError(f"channel '{pref}' missing — run: tfs.py channels ensure")
 
@@ -1160,10 +1166,17 @@ def reconcile_done(done, items=None):
     for e in items:
         if not e["url"] or e["guid"] in done:
             continue
-        want = norm_title(e["title"])
-        exp = expected_parts(e)
-        lst = by_c.get(cid_for(ep_num(e["title"]) or 1), [])
-        have = sum(1 for t, _m in lst if norm_title(loose_rss_title(t)) == want)
+        if time.time() - t_r0 > rbudget + 60:
+            log(f"reconcile: item budget reached — {added} healed so far, rest next run")
+            break
+        try:
+            want = norm_title(e["title"])
+            exp = expected_parts(e)
+            lst = by_c.get(cid_for(ep_num(e["title"]) or 1), [])
+            have = sum(1 for t, _m in lst if norm_title(loose_rss_title(t)) == want)
+        except Exception as ex:
+            partial.append(f"#{ep_num(e.get('title','')) or '?'} scan-error {str(ex)[:30]}")
+            continue
         if exp and have >= exp:
             done[e["guid"]] = {"title": f"{e['date']} {e['title']}".strip(),
                                "at": time.strftime("%F %T"), "how": "reconcile"}
@@ -1624,7 +1637,9 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
         log(f"channels ensured: +{len(made)} ({', '.join(made[:3])}…)" if len(made) > 3
             else f"channels ensured: +{len(made)}")
     items = rss_items()
+    t0 = time.time()  # budget clock starts at job entry (pre-drain counts)
     done = rj(art_path("done.json"), None)
+    log(f"state: done={len(done) if done else 'MISSING → seeding'}")
     if done is None:
         done, suspect = seed_done()
         wj(art_path("done.json"), done)
@@ -1649,7 +1664,6 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
         log(f"  claims honored: {len(claims)} active")
     log(f"bootstrap: {len(todo)} to build ({'newest-first' if reverse else 'oldest-first'}, "
         f"done {len(done)})")
-    t0 = time.time()
     K_MAX = max(1, int(os.environ.get("TFS_GOV_MAX", "3")))
     K = max(1, min(K_MAX, int(os.environ.get("TFS_PARALLEL", "1"))))
     if K == 1:
