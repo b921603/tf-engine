@@ -1570,10 +1570,12 @@ def enforce_channel_order(cids):
             if not rows:
                 continue
             def _key(item):
+                # display order: newest episode on top (eudic-native),
+                # parts in listening order within an episode
                 t, _m = item
                 n = ep_num(loose_rss_title(t))
                 pm = re.search(r"（(\d+)/(\d+)）", t)
-                return (n if n else 10 ** 6, int(pm.group(1)) if pm else 1)
+                return ((-n) if n else 10 ** 9, int(pm.group(1)) if pm else 0)
             want = [m for _t, m in sorted(rows, key=_key)]
             have = [m for _t, m in rows]
             if want == have:
@@ -1641,7 +1643,7 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
                 ledger_append({"ts": time.strftime("%F %T"), "title": e["title"],
                                "how": "episode-error", "err": str(ex)[:150]})
                 wj(art_path("done.json"), done)
-            if time.time() - t0 > 5.2 * 3600:      # runner headroom
+            if time.time() - t0 > 4.9 * 3600:      # runner headroom
                 log(f"bootstrap time budget reached at {i+1}/{len(todo)}")
                 break
         log(f"bootstrap pass done: done total {len(done)}")
@@ -1709,7 +1711,7 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
             for e, err in failed:
                 if e["guid"] in done:
                     continue
-                if time.time() - t0 > 5.2 * 3600:
+                if time.time() - t0 > 4.9 * 3600:
                     ledger_append({"ts": time.strftime("%F %T"), "title": e["title"],
                                    "how": "pending-retry", "err": err[:150]})
                     continue
