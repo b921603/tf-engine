@@ -48,6 +48,8 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_PROGRESS_TOPIC: ${{ secrets.NTFY_PROGRESS_TOPIC }}
+          TFS_MEDIA_TIMEOUT: "2700"
+          TFS_AUDIO_BITRATE: "16k"
           TFS_BASE: ${{ github.workspace }}/state
         run: python3 tfs_engine.py channels --ensure
       - name: bootstrap drain (oldest-first batch)
@@ -58,6 +60,8 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_PROGRESS_TOPIC: ${{ secrets.NTFY_PROGRESS_TOPIC }}
+          TFS_MEDIA_TIMEOUT: "2700"
+          TFS_AUDIO_BITRATE: "16k"
           TFS_BASE: ${{ github.workspace }}/state
           TFS_BOOTSTRAP_BATCH: ${{ inputs.batch || '15' }}
         run: python3 tfs_engine.py bootstrap --limit "${TFS_BOOTSTRAP_BATCH:-15}"
@@ -69,6 +73,8 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_PROGRESS_TOPIC: ${{ secrets.NTFY_PROGRESS_TOPIC }}
+          TFS_MEDIA_TIMEOUT: "2700"
+          TFS_AUDIO_BITRATE: "16k"
           TFS_BASE: ${{ github.workspace }}/state
           TFS_FORCE: ${{ inputs.force }}
         run: |
@@ -87,6 +93,8 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_PROGRESS_TOPIC: ${{ secrets.NTFY_PROGRESS_TOPIC }}
+          TFS_MEDIA_TIMEOUT: "2700"
+          TFS_AUDIO_BITRATE: "16k"
           TFS_BASE: ${{ github.workspace }}/state
         run: python3 tfs_engine.py subsync
       - name: save state
@@ -100,6 +108,8 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_PROGRESS_TOPIC: ${{ secrets.NTFY_PROGRESS_TOPIC }}
+          TFS_MEDIA_TIMEOUT: "2700"
+          TFS_AUDIO_BITRATE: "16k"
           RUN_ID: ${{ github.run_id }}
         run: |
           python3 - <<'PY'

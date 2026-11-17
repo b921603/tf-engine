@@ -950,11 +950,12 @@ def shutil_ff():
 
 
 def prep_audio(url, key):
-    """download → 32k mono → [(path, s0, dur)] (≤3600s parts)."""
+    """download → mono (TFS_AUDIO_BITRATE, default 32k) → [(path, s0, dur)] (≤3600s parts)."""
     tmp = os.path.join(BASE, "audio")
     os.makedirs(tmp, exist_ok=True)
     src = os.path.join(tmp, f"{key}.mp3")
-    conv = os.path.join(tmp, f"{key}_32k.mp3")
+    br = os.environ.get("TFS_AUDIO_BITRATE", "32k")
+    conv = os.path.join(tmp, f"{key}_{br}.mp3")
     if not (os.path.isfile(conv) and os.path.getsize(conv) > 10000):
         last = None
         for i in range(4):
@@ -975,7 +976,7 @@ def prep_audio(url, key):
             log(f"  ✗ download failed: {str(last)[:80]}")
             return []
         subprocess.run([ffpath(), "-y", "-i", src, "-vn", "-ac", "1",
-                        "-b:a", "32k", "-ar", "32000", conv],
+                        "-b:a", br, "-ar", "32000", conv],
                        capture_output=True, timeout=1800)
         try:
             os.remove(src)
@@ -1231,6 +1232,9 @@ def sync_one(e, done, omap, dry=False):
             ok_all = False
             ledger_append({"ts": time.strftime("%F %T"), "title": title,
                            "how": "media-upload-failed", "part": i + 1})
+            ntfy("TFF GA: media upload failed",
+                 f"⚠️ 分片 {i+1} 上傳失敗（WAF 節流窗？）：《{title[:50]}》——"
+                 "本集不寫 done，下輪自動續傳", 4)
             return False
         media_first = media_first or fid
         lrc_part = to_lrc(lines, s0, s0 + plen)
