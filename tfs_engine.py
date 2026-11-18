@@ -213,6 +213,32 @@ def cid_for(num):
     raise RuntimeError(f"channel '{pref}' missing — run: tfs.py channels ensure")
 
 
+_SPECIAL_ROUTE = {}   # guid → last numbered ep released before it (0 = pre-ep1)
+
+def _build_special_routes(items):
+    """Feed is oldest-first = release order; walk it once, remembering the
+    last numbered episode seen before each unnumbered special."""
+    last = 0
+    for e in items:
+        n = ep_num(e.get("title", ""))
+        if n:
+            last = n
+        else:
+            _SPECIAL_ROUTE[e["guid"]] = last
+
+def route_cid(e, items=None):
+    """Channel router. Numbered episodes → their range channel. Unnumbered
+    specials → the range channel of the last numbered episode released
+    before them (date-adjacent placement); pre-ep1 specials → #001-100."""
+    n = ep_num(e.get("title", ""))
+    if n:
+        return cid_for(n)
+    g = e["guid"]
+    if g not in _SPECIAL_ROUTE:
+        _build_special_routes(items if items is not None else rss_items())
+    return cid_for(_SPECIAL_ROUTE.get(g) or 1)
+
+
 def ensure_channels(dry=False):
     """Create every TFS range channel needed to cover the RSS ep-number span
     (IsBannedWords precheck → CreatePrivateChannel)."""
@@ -1186,7 +1212,7 @@ def reconcile_done(done, items=None):
         try:
             want = norm_title(e["title"])
             exp = expected_parts(e)
-            lst = by_c.get(cid_for(ep_num(e["title"]) or 1), [])
+            lst = by_c.get(route_cid(e, items), [])
             have = sum(1 for t, _m in lst if norm_title(loose_rss_title(t)) == want)
         except Exception as ex:
             partial.append(f"#{ep_num(e.get('title','')) or '?'} scan-error {str(ex)[:30]}")
@@ -1209,7 +1235,7 @@ def sync_one(e, done, omap, dry=False):
     title = e["title"]
     num = ep_num(title) or 1
     try:
-        cid = cid_for(num)
+        cid = route_cid(e)
     except RuntimeError as ex:
         log(f"  ✗ {ex}")
         if not dry:
@@ -1678,6 +1704,10 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
         log(f"  claims honored: {len(claims)} active")
     log(f"bootstrap: {len(todo)} to build ({'newest-first' if reverse else 'oldest-first'}, "
         f"done {len(done)})")
+    try:
+        _build_special_routes(items)   # date-route unnumbered specials once
+    except Exception:
+        pass
     if todo and not dry:
         try:
             ffpath()    # warm-up in main thread — workers never race the download
@@ -1710,7 +1740,7 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
         cids = set()
         for e in todo:
             try:
-                cids.add(cid_for(ep_num(e["title"]) or 1))
+                cids.add(route_cid(e))
             except Exception:
                 pass
         cids = sorted(cids)
