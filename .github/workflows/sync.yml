@@ -128,7 +128,7 @@ jobs:
           msg = {"topic": os.environ["NTFY_TOPIC"], "title": "TFF GA: sync failed",
                  "priority": 4, "tags": ["rotating_light"],
                  "message": ("GitHub Actions sync 失敗（run " + rid + "）。\n" +
-                             "查日誌：https://github.com/b921603/tff-sync/actions/run/" + rid +
+                             "查日誌：https://github.com/b921603/tf-engine/actions/run/" + rid +
                              "\n常見原因：cookie 過期（同時會發 TFF GA: cookie expired）或上傳鏈路異常。")}
           requests.post("https://ntfy.sh/", data=json.dumps(msg), timeout=20)
           PY

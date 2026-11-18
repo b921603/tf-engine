@@ -50,6 +50,7 @@ def log(*a):
 
 
 _STATE_LOCK = threading.RLock()
+_FFMPEG_LOCK = threading.Lock()
 
 
 def ntfy(title, body, prio=3, progress=False):
@@ -933,7 +934,7 @@ def ffpath():
     if not p:
         p = ff_bootstrap()
     if not p:
-        sys.exit("✗ ffmpeg not found and bootstrap download failed")
+        raise RuntimeError("ffmpeg not found and bootstrap download failed")
     return p
 
 
@@ -944,26 +945,39 @@ def ff_bootstrap():
     tgt = os.path.join(tempfile.gettempdir(), "htf_ffmpeg", "ffmpeg")
     if os.path.isfile(tgt):
         return tgt
-    url = ("https://johnvansickle.com/ffmpeg/releases/"
-           "ffmpeg-release-amd64-static.tar.xz")
-    try:
-        log("ffmpeg missing — fetching static build …")
-        d = os.path.dirname(tgt)
-        os.makedirs(d, exist_ok=True)
-        t0 = os.path.join(d, "ff.tar.xz")
-        urllib.request.urlretrieve(url, t0)
-        with tarfile.open(t0) as tf:
-            for m in tf.getmembers():
-                if m.name.endswith("/ffmpeg"):
-                    with open(tgt, "wb") as f:
-                        f.write(tf.extractfile(m).read())
-                    break
-        os.chmod(tgt, 0o755)
-        log(f"ffmpeg ready: {tgt}")
-        return tgt
-    except Exception as e:
-        log(f"ffmpeg bootstrap failed: {e}")
-        return None
+    with _FFMPEG_LOCK:                       # two workers raced the same
+        if os.path.isfile(tgt):              #   download once — serialize
+            return tgt                       #   + double-check after wait
+        url = ("https://johnvansickle.com/ffmpeg/releases/"
+               "ffmpeg-release-amd64-static.tar.xz")
+        t0 = None
+        try:
+            log("ffmpeg missing — fetching static build …")
+            d = os.path.dirname(tgt)
+            os.makedirs(d, exist_ok=True)
+            t0 = os.path.join(d, f"ff-{threading.get_ident()}.tar.xz")
+            urllib.request.urlretrieve(url, t0)
+            found = False
+            with tarfile.open(t0) as tf:
+                for m in tf.getmembers():
+                    if m.name.endswith("/ffmpeg"):
+                        with open(tgt + ".part", "wb") as f:
+                            f.write(tf.extractfile(m).read())
+                        found = True
+                        break
+            if not found:
+                raise RuntimeError("ffmpeg binary not found in tarball")
+            os.chmod(tgt + ".part", 0o755)
+            os.replace(tgt + ".part", tgt)   # atomic publish
+            log(f"ffmpeg ready: {tgt}")
+            return tgt
+        except Exception as e:
+            log(f"ffmpeg bootstrap failed: {e}")
+            return None
+        finally:
+            if t0 and os.path.exists(t0):
+                try: os.remove(t0)
+                except OSError: pass
 
 
 def shutil_ff():
@@ -1664,6 +1678,11 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
         log(f"  claims honored: {len(claims)} active")
     log(f"bootstrap: {len(todo)} to build ({'newest-first' if reverse else 'oldest-first'}, "
         f"done {len(done)})")
+    if todo and not dry:
+        try:
+            ffpath()    # warm-up in main thread — workers never race the download
+        except Exception as ex:
+            log(f"ffmpeg warm-up failed (workers will retry): {str(ex)[:60]}")
     K_MAX = max(1, int(os.environ.get("TFS_GOV_MAX", "3")))
     K = max(1, min(K_MAX, int(os.environ.get("TFS_PARALLEL", "1"))))
     if K == 1:
@@ -1701,7 +1720,7 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
         try:
             while idx < len(todo) or inflight:
                 while (idx < len(todo) and len(inflight) < K
-                       and time.time() - t0 <= 5.2 * 3600):
+                       and time.time() - t0 <= 4.9 * 3600):
                     e = todo[idx]; idx += 1
                     if is_claimed_elsewhere(e["guid"]):
                         log(f"  ⚭ {e['title'][:40]} claimed by co-worker — skip")
@@ -1717,8 +1736,8 @@ def job_bootstrap(limit=0, dry=False, reverse=False):
                     e = inflight.pop(f)
                     try:
                         okc, err = f.result()
-                    except Exception as ex:
-                        okc, err = False, str(ex)[:150]
+                    except BaseException as ex:   # SystemExit from a worker
+                        okc, err = False, str(ex)[:150]  #   must not escape
                     if okc:
                         streak += 1
                         if streak >= 3 and K < K_MAX:
