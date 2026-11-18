@@ -4,6 +4,7 @@ name: tff-sync
 on:
   schedule:
     - cron: "27 * * * *"
+    - cron: "57 * * * *"   # second tick: GitHub drops scheduled runs under load — two chances per hour, concurrency dedupes
   workflow_dispatch:
     inputs:
       force:
