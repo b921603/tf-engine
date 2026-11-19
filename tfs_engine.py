@@ -318,8 +318,23 @@ def ensure_group():
                 log("  group create failed — skip (retry next pass)")
                 return
         gid = grp["Id"]
-        ids = [c["Id"] for c in channel_list()
-               if c.get("Name", "").startswith("The Tim Ferriss Show")]
+        chans = [c for c in channel_list()
+                 if c.get("Name", "").startswith("The Tim Ferriss Show")]
+        # AddChannelsToPrivateGroup REWRITES the group's member order to match
+        # the given channelIds sequence (proven 2026-11-19: a re-bind flipped
+        # the group into exactly that order). channel_list() returns a dynamic
+        # recently-touched-first order, so the old re-bind-every-time flow
+        # scrambled the group ordering on every drain batch. Only POST when a
+        # channel is genuinely missing; even then bind in display order
+        # (newest range first).
+        if (grp.get("TotalMediaCount") or 0) >= len(chans):
+            log(f"  group bind: already bound "
+                f"({grp.get('TotalMediaCount')}/{len(chans)}) — skip re-bind")
+            return
+        def _rng(c):
+            m = re.search(r"#(\d{3})-", c.get("Name", ""))
+            return int(m.group(1)) if m else 0
+        ids = [c["Id"] for c in sorted(chans, key=_rng, reverse=True)]
         r = req("POST", f"{EUDIC}/ting/AddChannelsToPrivateGroup",
                 data=[("groupId", gid)] + [("channelIds", i) for i in ids], timeout=60)
         ok = '"success":true' in (r.text or "").replace(" ", "")
@@ -1693,6 +1708,62 @@ def fix_hidden(cids):
                     log(f"  ⚑ restore err {t[:40]}: {str(ex)[:60]}")
         except Exception as ex:
             log(f"  fix_hidden err ({cid[:8]}): {str(ex)[:60]}")
+
+
+def enforce_group_order():
+    """Re-assert the group's member-channel order (newest range first).
+    Group ordering is stored server-side and several paths rewrite it
+    (e.g. AddChannelsToPrivateGroup re-binds); verify against the desired
+    descending order and POST only on diff. Runs at the end of every sync
+    pass, after enforce_channel_order + fix_hidden (a re-post may touch a
+    member channel's dynamic listing order)."""
+    try:
+        gl = (req("POST", f"{EUDIC}/ting/GetPrivateGroups?withDefault=false",
+                  data="", timeout=40).json()
+              .get("channelList", {}).get("UploadedChannels", []))
+        grp = next((c for c in gl if c.get("Name") == TFS_GROUP), None)
+        if not grp:
+            log("  group order: group not found — skip")
+            return
+        gid = grp["Id"]
+        got = []
+        for pg in range(3):
+            r = req("GET", f"{EUDIC}/ting/GetPrivateChannelInfos"
+                           f"?page={pg}&groupId={gid}", timeout=40)
+            xs = re.split(r'<div class="dragBox"', r.text or "")[1:]
+            if not xs:
+                break
+            for x in xs:
+                mm = re.search(r'media_id"[^>]*data="([^"]+)"', x)
+                if mm:
+                    got.append(mm.group(1))
+            if len(xs) < 20:
+                break
+        if not got:
+            log("  group order: no members readable — skip")
+            return
+        want_all = [cid for _a, _b, cid in sorted(tfs_channels(), reverse=True)]
+        got_set = set(got)
+        # known channels in descending range order; anything unknown (e.g. a
+        # freshly bound channel not yet in the RSS span) keeps its place at
+        # the tail in current relative order
+        want = ([c for c in want_all if c in got_set]
+                + [c for c in got if c not in got_set])
+        if got == want:
+            log(f"  group order ok ({len(got)} members, newest first)")
+            return
+        r = req("POST", f"{EUDIC}/ting/OrderUserGroupChannels",
+                data=[("groupId", gid)] + [("channelIds", c) for c in want],
+                timeout=60)
+        ok = '"success":true' in (r.text or "").replace(" ", "")
+        log(f"  ⇕ group order fix ({len(want)} channels): "
+            f"{'OK' if ok else (r.text or '')[:60]}")
+        if ok:
+            ntfy("TFF GA: group order fixed",
+                 f"⇕ 分組頻道序被平台路徑重寫，已自動修復為降序（{len(want)} 頻道）", 3)
+        time.sleep(GAP)
+    except Exception as ex:
+        log(f"  group order err: {str(ex)[:80]}")
 
 
 def enforce_channel_order(cids):

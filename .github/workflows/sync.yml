@@ -100,6 +100,7 @@ jobs:
           import tfs_engine as t
           t.enforce_channel_order([c for _a, _b, c in t.tfs_channels()])
           t.fix_hidden([c for _a, _b, c in t.tfs_channels()])
+          t.enforce_group_order()
           PY
       - name: finish AI subtitles (subsync finishing queue)
         if: always()
