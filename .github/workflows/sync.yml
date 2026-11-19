@@ -91,6 +91,15 @@ jobs:
           else
             python3 tfs_engine.py sync --newest
           fi
+      - name: display order fix (post-sync, all populated channels)
+        if: always()
+        env:
+          EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
+        run: |
+          python3 - <<'PY'
+          import tfs_engine as t
+          t.enforce_channel_order([c for _a, _b, c in t.tfs_channels()])
+          PY
       - name: finish AI subtitles (subsync finishing queue)
         if: always()
         env:

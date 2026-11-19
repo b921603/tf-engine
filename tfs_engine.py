@@ -226,6 +226,22 @@ def _build_special_routes(items):
         else:
             _SPECIAL_ROUTE[e["guid"]] = last
 
+_SPECIAL_POS = {}
+
+def _special_pos():
+    """norm_title(special) → release position = last numbered episode before
+    it + 0.5 (feed is release-ordered) → e.g. a teaser after #59 sorts as
+    59.5: above #59, below #60 in the newest-first display."""
+    if not _SPECIAL_POS:
+        last = 0
+        for e in rss_items():
+            n = ep_num(e.get("title", ""))
+            if n:
+                last = n
+            else:
+                _SPECIAL_POS[norm_title(e.get("title", ""))] = last + 0.5
+    return _SPECIAL_POS
+
 def route_cid(e, items=None):
     """Channel router. Numbered episodes → their range channel. Unnumbered
     specials → the range channel of the last numbered episode released
@@ -1647,11 +1663,14 @@ def enforce_channel_order(cids):
                 continue
             def _key(item):
                 # display order: newest episode on top (eudic-native),
-                # parts in listening order within an episode
+                # parts in listening order within an episode; unnumbered
+                # specials slot by release date (last numbered neighbour +0.5)
                 t, _m = item
                 n = ep_num(loose_rss_title(t))
+                if not n:
+                    n = _special_pos().get(norm_title(loose_rss_title(t)), 10 ** 9)
                 pm = re.search(r"（(\d+)/(\d+)）", t)
-                return ((-n) if n else 10 ** 9, int(pm.group(1)) if pm else 0)
+                return (-n, int(pm.group(1)) if pm else 0)
             want = [m for _t, m in sorted(rows, key=_key)]
             have = [m for _t, m in rows]
             if want == have:
