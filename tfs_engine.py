@@ -1652,6 +1652,49 @@ def _episode_worker(e, done, omap, dry):
         return (False, str(ex)[:150])
 
 
+def fix_hidden(cids):
+    """Self-heal articles the platform flagged 未显示 (invisible in the app;
+    empirically 6/770 hit 2026-11-19, no title/topic pattern). A
+    byte-identical re-post resets the display flag (verified). Walks
+    sortby=0 pages only; rare event — heavy work only when hits exist."""
+    for cid in cids:
+        try:
+            hits = []
+            for pg in range(24):
+                r = req("GET", f"{EUDIC}/ting/GetPrivateMedias"
+                               f"?sortby=0&page={pg}&channelId={cid}", timeout=45)
+                if not r.text:
+                    break
+                got = 0
+                for x in re.split(r'<div class="dragBox">', r.text)[1:]:
+                    tm = re.search(r'rl-title"[^>]*title="([^"]*)"', x)
+                    mid = re.search(r'media_id"[^>]*data="([^"]+)"', x)
+                    if tm and mid:
+                        got += 1
+                        if "hideState" in x:
+                            hits.append((html.unescape(tm.group(1)), mid.group(1)))
+                if not got:
+                    break
+            for t, mid in hits:
+                log(f"  ⚑ hidden article: {t[:56]} — re-posting to restore")
+                try:
+                    _st, txt = get_edit_page(cid, mid)
+                    info = parse_edit_page(txt)
+                    if post_article(cid, mid, info["title"], info["lrc"],
+                                    info["desc"], info.get("thumb_fid", "")):
+                        log(f"  ⚑ restored: {t[:56]}")
+                        ntfy("TFF GA: hidden restored",
+                             f"⚑ 平台隱藏文章已自癒：《{t[:56]}》", 3)
+                    else:
+                        log(f"  ⚑ restore FAILED: {t[:56]}")
+                        ntfy("TFF GA: hidden restore failed",
+                             f"⚠️ 平台隱藏文章重貼失敗：《{t[:56]}》\n需人工檢查", 4)
+                except Exception as ex:
+                    log(f"  ⚑ restore err {t[:40]}: {str(ex)[:60]}")
+        except Exception as ex:
+            log(f"  fix_hidden err ({cid[:8]}): {str(ex)[:60]}")
+
+
 def enforce_channel_order(cids):
     """Post-drain display-order correction: parallel landings can interleave
     during busy windows — re-sort each channel by (episode, part) so the
