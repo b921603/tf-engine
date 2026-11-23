@@ -20,7 +20,7 @@ jobs:
       - name: heartbeat commit
         run: |
           git config user.name "tff-bot"
-          git config user.email "actions@users.noreply.github.com"
+          git config user.email "b921603@users.noreply.github.com"
           echo "💓 $(date -u '+%F %T') UTC run=${{ github.run_id }}" >> .heartbeat
           tail -n 200 .heartbeat > .heartbeat.tmp && mv .heartbeat.tmp .heartbeat
           git add .heartbeat
