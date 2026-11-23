@@ -144,6 +144,9 @@ jobs:
                              "\n常見原因：cookie 過期（同時會發 TFF GA: cookie expired）或上傳鏈路異常。")}
           requests.post("https://ntfy.sh/", data=json.dumps(msg), timeout=20)
           PY
+      - name: emit pit-status (protocol pit-status/1)
+        if: always()
+        run: python3 pit_report.py
       - name: commit audit ledger (public trail)
         if: always()
         run: |
@@ -151,6 +154,7 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           mkdir -p trail && cp -f state/sync_ledger.jsonl trail/ 2>/dev/null || true
           cp -f state/done.json trail/ 2>/dev/null || true
+          cp -f state/pit-status.json trail/ 2>/dev/null || true
           cp -f state/sandbox_claims.jsonl trail/ 2>/dev/null || true
-          git add trail/sync_ledger.jsonl trail/done.json trail/sandbox_claims.jsonl 2>/dev/null || true
+          git add trail/sync_ledger.jsonl trail/done.json trail/sandbox_claims.jsonl trail/pit-status.json 2>/dev/null || true
           git diff --cached --quiet || (git commit -m "ledger: run ${{ github.run_id }}" && git pull --rebase && git push)
