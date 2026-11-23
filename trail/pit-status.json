@@ -1,0 +1,56 @@
+{
+ "protocol": "pit-status/1",
+ "family": "tff",
+ "updated_at": "2026-11-23T03:22:52Z",
+ "mode": "backlog",
+ "official_total": 893,
+ "official_available": 892,
+ "completed_eps": 381,
+ "true_missing": 512,
+ "completion": 0.427,
+ "status": "in_progress",
+ "blocked_reason": "audio-lost 1 eps excluded",
+ "missing_sample": [
+  {
+   "num": 228,
+   "title": "#228: The Lion of Olympic Weightlifting, 62-Year-Old Jerzy G"
+  },
+  {
+   "num": 229,
+   "title": "#229: Ricardo Semler -- The Seven-Day Weekend and How to Bre"
+  },
+  {
+   "num": 230,
+   "title": "#230: The Secrets, Tactics, and Creative Processes of High P"
+  },
+  {
+   "num": 231,
+   "title": "#231: How to Be Creative Like a Motherf*cker -- Cheryl Stray"
+  },
+  {
+   "num": 232,
+   "title": "#232: The Tim Ferriss Radio Hour: Controlling Stress, Nutrit"
+  },
+  {
+   "num": 233,
+   "title": "#233: Cory Booker -- Street Fights, 10-Day Hunger Strikes, a"
+  },
+  {
+   "num": 234,
+   "title": "#234: Marie Kondo -- The Japanese Tidying Master"
+  },
+  {
+   "num": 235,
+   "title": "#235: Dorian Yates on High Intensity Training, Injury Preven"
+  },
+  {
+   "num": 236,
+   "title": "#236: The Alien of Extraordinary Ability"
+  },
+  {
+   "num": 237,
+   "title": "#237: Exploring Smart Drugs, Fasting, and Fat Loss -- Dr. Rh"
+  }
+ ],
+ "notes": "completion = distinct official episodes in done ledger / available catalog; parts inflate article counts"
+}
