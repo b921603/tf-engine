@@ -458,7 +458,36 @@ def parse_edit_page(text):
     return out
 
 
+try:
+    import eudic_slots
+except Exception:
+    eudic_slots = None
+
+
 def post_article(cid, mid, title, lrc, desc, thumb_fid, intros=""):
+    """slot-governed 薄殼（統御層故障自動降級直上；TTL 600s 自動釋放）。"""
+    pat = os.environ.get("GH_PAT", "")
+    sid = None
+    if eudic_slots and pat:
+        try:
+            sid = eudic_slots.claim("tff", mid, pat, wait_min=6, ttl=600, log=log)
+        except Exception:
+            sid = None
+    okp = True
+    try:
+        return _post_article_inner(cid, mid, title, lrc, desc, thumb_fid, intros)
+    except Exception:
+        okp = False
+        raise
+    finally:
+        if sid and not okp and pat:
+            try:
+                eudic_slots.release("tff", sid, pat, log=log)
+            except Exception:
+                pass
+
+
+def _post_article_inner(cid, mid, title, lrc, desc, thumb_fid, intros=""):
     """Full-field POST (the ONLY writer in this engine; lrc must be byte-identical)."""
     data = {"id": mid, "title": title, "channelId": cid,
             "thumb": thumb_fid or "", "lrc": lrc or "",
