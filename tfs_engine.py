@@ -1331,6 +1331,22 @@ def reconcile_done(done, items=None):
     if added or partial:
         wj(art_path("done.json"), done)
         log(f"reconcile: +{added} done ｜ partial pending resume: {partial[:8]}")
+    if dup_report:
+        try:
+            wj(art_path("dup_report.json"),
+               {"at": time.strftime("%F %T"), "channels": dup_report,
+                "total_extra": sum(c["extra"] for c in dup_report.values())})
+        except Exception:
+            pass
+        _tot = sum(c["extra"] for c in dup_report.values())
+        _grp = sum(c["dup_groups"] for c in dup_report.values())
+        log(f"  ⚠ dup total: {_grp} 組／多餘 {_tot} 份 — trail/dup_report.json")
+        try:
+            ntfy("TFF GA: 頻道重複分片掃描",
+                 f"發現 {_grp} 組重複標題（多餘 {_tot} 份）——詳見 trail/dup_report.json。"
+                 "已停產新重複（parts ledger＋listing 硬化）；清理待人類核准。", 3)
+        except Exception:
+            pass
     return added
 
 
