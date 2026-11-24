@@ -1026,45 +1026,66 @@ def ffpath():
 
 def ff_bootstrap():
     """Runner images may lack ffmpeg (ubuntu-26.04 dropped it) — fetch a
-    static build once per run (~40 MB, seconds on runners)."""
+    static build once per run (~40 MB, seconds on runners).
+    2026-11-24: johnvansickle 下載失敗（episodes ×5 ffmpeg not found）→
+    加 BtbN GitHub 鏡像 fallback（runner egress 對 GitHub 最穩）。"""
     import tarfile, tempfile, urllib.request
     tgt = os.path.join(tempfile.gettempdir(), "htf_ffmpeg", "ffmpeg")
+    t0 = None
     if os.path.isfile(tgt):
         return tgt
-    with _FFMPEG_LOCK:                       # two workers raced the same
-        if os.path.isfile(tgt):              #   download once — serialize
-            return tgt                       #   + double-check after wait
-        url = ("https://johnvansickle.com/ffmpeg/releases/"
-               "ffmpeg-release-amd64-static.tar.xz")
-        t0 = None
-        try:
-            log("ffmpeg missing — fetching static build …")
+    try:
+        with _FFMPEG_LOCK:                   # two workers raced the same
+            if os.path.isfile(tgt):          #   download once — serialize
+                return tgt                   #   + double-check after wait
+            urls = [("https://johnvansickle.com/ffmpeg/releases/"
+                     "ffmpeg-release-amd64-static.tar.xz", "/ffmpeg"),
+                    ("https://github.com/BtbN/FFmpeg-Builds/releases/download/"
+                     "latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
+                     "/bin/ffmpeg")]         # runner-friendly GitHub mirror
+            t0 = None
+            last_err = None
             d = os.path.dirname(tgt)
             os.makedirs(d, exist_ok=True)
-            t0 = os.path.join(d, f"ff-{threading.get_ident()}.tar.xz")
-            urllib.request.urlretrieve(url, t0)
-            found = False
-            with tarfile.open(t0) as tf:
-                for m in tf.getmembers():
-                    if m.name.endswith("/ffmpeg"):
-                        with open(tgt + ".part", "wb") as f:
-                            f.write(tf.extractfile(m).read())
-                        found = True
-                        break
-            if not found:
-                raise RuntimeError("ffmpeg binary not found in tarball")
+            for url, bin_suffix in urls:
+                try:
+                    log(f"ffmpeg missing — fetching static build … {url.split('/')[2]}")
+                    t0 = os.path.join(d, f"ff-{threading.get_ident()}.tar.xz")
+                    urllib.request.urlretrieve(url, t0)
+                    found = False
+                    with tarfile.open(t0) as tf:
+                        for m in tf.getmembers():
+                            if m.name.endswith(bin_suffix):
+                                with open(tgt + ".part", "wb") as f:
+                                    f.write(tf.extractfile(m).read())
+                                found = True
+                                break
+                    if not found:
+                        raise RuntimeError("ffmpeg binary not found in tarball")
+                    last_err = None
+                    break
+                except Exception as ex:
+                    last_err = ex
+                    log(f"  ffmpeg source failed: {str(ex)[:80]} — trying next mirror")
+                    try:
+                        os.remove(t0)
+                    except Exception:
+                        pass
+            if last_err is not None:
+                raise last_err
             os.chmod(tgt + ".part", 0o755)
             os.replace(tgt + ".part", tgt)   # atomic publish
             log(f"ffmpeg ready: {tgt}")
             return tgt
-        except Exception as e:
-            log(f"ffmpeg bootstrap failed: {e}")
-            return None
-        finally:
+    except Exception as e:
+        log(f"ffmpeg bootstrap failed: {e}")
+        return None
+    finally:
+        try:
             if t0 and os.path.exists(t0):
-                try: os.remove(t0)
-                except OSError: pass
-
+                os.remove(t0)
+        except Exception:
+            pass
 
 def shutil_ff():
     import shutil
@@ -1209,13 +1230,26 @@ def job_login():
 # ─────────────────────────── job: sync ───────────────────────────
 def raw_list(cid):
     """[(title, mid)] unkeyed — dup-safe (list_articles is title-keyed and
-    silently merges same-title articles)."""
+    silently merges same-title articles).
+    空回應硬化（2026-11-24 dup 事故）：平台清單偶發空/截斷（WAF/一致性延遲）——
+    空頁重試 2 次；**首頁空視為 listing 失敗（raise）而非清單結尾**，
+    否則 count_channel_parts 少算 → skip=0 → 整集重傳 = 重複分片。"""
     out, seen = [], set()
     for sb in (0, 1):
         for pg in range(24):
             r = req("GET", f"{EUDIC}/ting/GetPrivateMedias"
                            f"?sortby={sb}&page={pg}&channelId={cid}", timeout=45)
-            if not r.text:
+            empty_tries = 0
+            while not (r.text or "").strip():
+                empty_tries += 1
+                if pg == 0 and sb == 0 and empty_tries >= 3 and not out:
+                    raise RuntimeError(f"raw_list {cid[:8]}: listing empty after retries")
+                if empty_tries >= 3:
+                    break
+                time.sleep(6)
+                r = req("GET", f"{EUDIC}/ting/GetPrivateMedias"
+                               f"?sortby={sb}&page={pg}&channelId={cid}", timeout=45)
+            if not (r.text or "").strip():
                 break
             got = 0
             for x in re.split(r'<div class="dragBox">', r.text)[1:]:
@@ -1252,12 +1286,23 @@ def reconcile_done(done, items=None):
     chans = tfs_channels()
     t_r0 = time.time()
     rbudget = int(os.environ.get("TFS_RECONCILE_BUDGET", "900"))
+    dup_report = {}
     for i, (_a, _b, c) in enumerate(chans):
         if by_c and time.time() - t_r0 > rbudget:
             log(f"reconcile: budget {rbudget}s reached at {i+1}/{len(chans)} — partial data")
             break
         try:
             rows = raw_list(c)
+            _tc = {}
+            for _t, _m in rows:
+                _k = norm_title(loose_rss_title(_t))
+                _tc[_k] = _tc.get(_k, 0) + 1
+            _dups = {t: n for t, n in _tc.items() if n > 1}
+            if _dups:
+                _extra = sum(n - 1 for n in _dups.values())
+                dup_report[c] = {"channel": ch_name(*ch_range_for(0)) if False else c[:8],
+                                 "rows": len(rows), "dup_groups": len(_dups), "extra": _extra}
+                log(f"  ⚠ dup scan {c[:8]}: {len(_dups)} 重複組（多餘 {_extra} 份）")
             by_c[c] = rows
             log(f"reconcile: scanned {ch_name(_a, _b)} ({i+1}/{len(chans)}): {len(rows)} rows")
         except Exception as ex:
@@ -1287,6 +1332,41 @@ def reconcile_done(done, items=None):
         wj(art_path("done.json"), done)
         log(f"reconcile: +{added} done ｜ partial pending resume: {partial[:8]}")
     return added
+
+
+_PARTS_LOCK = threading.Lock()
+
+
+def _parts_ledger_path():
+    return art_path("parts_ledger.jsonl")
+
+
+def parts_ledger_load(guid):
+    """[(full_title, cid)] for guid — from the crash-safe parts ledger."""
+    try:
+        with _PARTS_LOCK:
+            if not os.path.isfile(_parts_ledger_path()):
+                return []
+            hits = []
+            with open(_parts_ledger_path(), encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except Exception:
+                        continue
+                    if r.get("guid") == guid:
+                        hits.append((r.get("full"), r.get("cid")))
+            return hits
+    except Exception:
+        return []
+
+
+def parts_ledger_mark(guid, full, cid):
+    """Record one created part immediately (kill-safe resume anchor)."""
+    with _PARTS_LOCK:
+        with open(_parts_ledger_path(), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": time.strftime("%F %T"), "guid": guid,
+                                "full": full, "cid": cid}, ensure_ascii=False) + "\n")
 
 
 def sync_one(e, done, omap, dry=False):
@@ -1345,9 +1425,14 @@ def sync_one(e, done, omap, dry=False):
     date = e["date"]
     ok_all = True
     media_first = ""
-    # crash-resume: skip parts that already exist in the channel
+    # crash-resume: skip parts that already exist (channel listing ∪ parts ledger)
     exp = expected_parts(e)
     have = count_channel_parts(cid, title)
+    ledger_parts = parts_ledger_load(e["guid"])   # 即時落帳（timeout-kill 防護）
+    if exp and ledger_parts and len(ledger_parts) >= exp and have is not None and have < exp:
+        log(f"  ⧗ ledger has {len(ledger_parts)}/{exp} parts — trusting ledger over listing lag")
+    have_eff = max(have or 0, len(ledger_parts or []))
+    have = have_eff
     if exp and have >= exp:
         done[e["guid"]] = {"title": f"{date} {title}".strip(),
                            "at": time.strftime("%F %T"), "cid": cid,
@@ -1403,6 +1488,10 @@ def sync_one(e, done, omap, dry=False):
                 continue
             if r.status_code == 200 and '"code":200' in (r.text or "").replace(" ", ""):
                 okp = True
+                try:
+                    parts_ledger_mark(e["guid"], full, cid)   # 即時落帳：kill 後可續傳不重傳
+                except Exception:
+                    pass
                 break
             log(f"  create try{k}: {r.status_code} {(r.text or '')[:70]}")
             time.sleep(60 if "处理程序" in (r.text or "") else 20 + 15 * k)
