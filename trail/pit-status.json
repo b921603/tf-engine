@@ -1,56 +1,15 @@
 {
  "protocol": "pit-status/1",
  "family": "tff",
- "updated_at": "2026-11-24T15:10:01Z",
+ "updated_at": "2026-11-24T22:41:31Z",
  "mode": "backlog",
  "official_total": 893,
  "official_available": 892,
- "completed_eps": 847,
- "true_missing": 46,
- "completion": 0.95,
- "status": "in_progress",
+ "completed_eps": 893,
+ "true_missing": 0,
+ "completion": 1.001,
+ "status": "complete",
  "blocked_reason": "audio-lost 1 eps excluded",
- "missing_sample": [
-  {
-   "num": 465,
-   "title": "#465: Jamie Foxx on Workout Routines, Success Habits, and Un"
-  },
-  {
-   "num": 466,
-   "title": "#466: Richard Koch on Mastering the 80/20 Principle, Achievi"
-  },
-  {
-   "num": 467,
-   "title": "#467: Dustin Yellin on Making Art, Weaving Madness, and Forg"
-  },
-  {
-   "num": 468,
-   "title": "#468: Books I've Loved — Cal Fussman"
-  },
-  {
-   "num": 469,
-   "title": "#469: Dr. Mark Plotkin on Ethnobotany, Real vs. Fake Shamans"
-  },
-  {
-   "num": 470,
-   "title": "#470: Steven Rinella on Hunting (And Why You Should Care), R"
-  },
-  {
-   "num": 471,
-   "title": "#471: Adam Grant — How to Remember Anything"
-  },
-  {
-   "num": 472,
-   "title": "#472: Books I've Loved — Debbie Millman"
-  },
-  {
-   "num": 473,
-   "title": "#473: Naval Ravikant on Happiness, Reducing Anxiety, Crypto "
-  },
-  {
-   "num": 474,
-   "title": "#474: Matthew McConaughey — The Power of “No, Thank You,” Ke"
-  }
- ],
+ "missing_sample": [],
  "notes": "completion = distinct official episodes in done ledger / available catalog; parts inflate article counts"
 }
