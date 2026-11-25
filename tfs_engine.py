@@ -13,6 +13,7 @@ import base64
 import json
 import os
 import re
+import unicodedata
 import subprocess
 import sys
 import time
@@ -1400,7 +1401,7 @@ def sync_one(e, done, omap, dry=False):
     log(f"▶ [#{num} → {ch_name(*ch_range_for(num))}] {title[:70]}")
     lines, slug, official = [], "", ""
     if SUB_SOURCE == "podscripts":
-        slugs = slugs or ps_slugs()
+        slugs = ps_slugs()      # file-cached（原寫法引用 job_sync local → NameError，pyflakes 抓出）
         lines, slug = transcript(title, slugs)
     elif e.get("transcript"):
         official = e["transcript"]
