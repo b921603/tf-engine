@@ -1295,7 +1295,7 @@ def reconcile_done(done, items=None):
             rows = raw_list(c)
             _tc = {}
             for _t, _m in rows:
-                _k = norm_title(loose_rss_title(_t))
+                _k = norm_title(_t)     # 全名（含（i/n）後綴）＝分片身份；loose 會把同集多分片誤判為重複
                 _tc[_k] = _tc.get(_k, 0) + 1
             _dups = {t: n for t, n in _tc.items() if n > 1}
             if _dups:

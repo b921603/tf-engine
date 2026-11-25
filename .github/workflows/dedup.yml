@@ -1,0 +1,42 @@
+name: dedup-patrol
+
+on:
+  schedule:
+    - cron: "15 * * * *"    # 錯峰於 tff(:27/:57)/htf(:03/:33)/patrol(05:30TPE) 之外
+    - cron: "45 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dedup-patrol
+  cancel-in-progress: false
+
+jobs:
+  patrol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: dedup patrol (auto-delete, user-approved 2026-11-24)
+        run: python3 dedup_patrol.py
+        env:
+          EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
+          EUDIC_USER: ${{ secrets.EUDIC_USER }}
+          EUDIC_PASS: ${{ secrets.EUDIC_PASS }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          DEDUP_DELETE: "1"
+      - name: commit dedup trail
+        if: always()
+        run: |
+          git config user.name "tff-bot"
+          git config user.email "b921603@users.noreply.github.com"
+          mkdir -p trail && cp -f state/dup_report.json trail/ 2>/dev/null || true
+          cp -f state/dedup_actions.jsonl trail/ 2>/dev/null || true
+          git add trail/dup_report.json trail/dedup_actions.jsonl 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "dedup: run ${{ github.run_id }}" && git pull --rebase && git push)
