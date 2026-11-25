@@ -1,61 +1,18 @@
 {
  "protocol": "pit-status/1",
  "family": "tff",
- "updated_at": "2026-11-25T07:31:01Z",
+ "updated_at": "2026-11-25T09:13:23Z",
  "mode": "backlog",
  "official_total": 893,
  "official_available": 892,
- "completed_eps": 0,
- "true_missing": 893,
- "completion": 0.0,
- "status": "in_progress",
+ "completed_eps": 893,
+ "true_missing": 0,
+ "completion": 1.001,
+ "status": "complete",
  "blocked_reason": "audio-lost 1 eps excluded",
- "missing_sample": [
-  {
-   "num": 1,
-   "title": "Episode 1: Kevin Rose"
-  },
-  {
-   "num": 2,
-   "title": "Episode 2: Joshua Waitzkin"
-  },
-  {
-   "num": 3,
-   "title": "Episode 3: Kelly Starrett and Dr. Justin Mager"
-  },
-  {
-   "num": 4,
-   "title": "Episode 4: Ryan Holiday"
-  },
-  {
-   "num": 5,
-   "title": "Episode 5:  Jason Silva"
-  },
-  {
-   "num": 6,
-   "title": "Episode 6: 6 Formulas for More Output and Less Overwhelm"
-  },
-  {
-   "num": 7,
-   "title": "Episode 7: Stephen Dubner, co-author of Freakonomics"
-  },
-  {
-   "num": 8,
-   "title": "Episode 8: Chase Jarvis, Master Photographer"
-  },
-  {
-   "num": 9,
-   "title": "Episode 9: The 9 Habits to Stop Now -- The Not-To-Do List"
-  },
-  {
-   "num": 10,
-   "title": "Ep. 10: Brian Koppelman, co-writer/producer of Rounders, Oce"
-  }
- ],
- "retired_count": 1,
- "retired_sample": [
-  "TEST removed episode"
- ],
+ "missing_sample": [],
+ "retired_count": 0,
+ "retired_sample": [],
  "retired_check": "ok",
  "notes": "completion = distinct official episodes in done ledger / available catalog; parts inflate article counts"
 }

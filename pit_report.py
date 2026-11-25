@@ -84,8 +84,9 @@ def main():
         "retired_check": retired_check,
         "notes": "completion = distinct official episodes in done ledger / available catalog; parts inflate article counts",
     }
-    os.makedirs("trail", exist_ok=True)
-    json.dump(rep, open("trail/pit-status.json", "w"), ensure_ascii=False, indent=1)
+    trail = os.path.join(BASE, "..", "trail")   # 跟隨 BASE——沙盒測試（TFS_BASE=/tmp/…）不再污染 repo（11-25 教訓：git add -A 掃進測試產物）
+    os.makedirs(trail, exist_ok=True)
+    json.dump(rep, open(os.path.join(trail, "pit-status.json"), "w"), ensure_ascii=False, indent=1)
     print(f"pit-status: {rep['completed_eps']}/{rep['official_available']} "
           f"completion={rep['completion']} missing={rep['true_missing']} "
           f"retired={rep['retired_count'] if rep['retired_count'] is not None else '?'}")
