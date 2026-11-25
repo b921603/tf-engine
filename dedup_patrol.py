@@ -25,8 +25,15 @@ AUTH_URL = "https://my.eudic.net/ting/DeletePriveteMedia"
 
 
 def canonical_mids():
-    """done.json 全部 mids 的集合（帳本正主）。"""
-    done = rj(art_path("done.json"), {}) or {}
+    """done.json 全部 mids 的集合（帳本正主）。
+    dedup workflow 的 checkout 沒有 state/done.json（不入 repo）→
+    fallback 到 trail/done.json（sync ledger step 每 run commit 的副本）。"""
+    done = rj(art_path("done.json"), None)
+    if done is None:
+        trail = art_path("done.json").replace("state/", "trail/")
+        done = rj(trail, {}) or {}
+        if done:
+            log(f"canonical: using trail/done.json ({len(done)} entries)")
     mids = set()
     for rec in done.values():
         for m in (rec.get("mids") or []):
