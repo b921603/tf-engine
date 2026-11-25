@@ -143,6 +143,25 @@ jobs:
         with:
           path: state
           key: tff-state-${{ github.run_id }}
+      - name: emit pit-status (protocol pit-status/1)
+        if: always()
+        run: python3 pit_report.py
+      - name: commit audit ledger (public trail)
+        if: always()
+        run: |
+          git config user.name "tff-bot"
+          git config user.email "b921603@users.noreply.github.com"
+          mkdir -p trail && cp -f state/sync_ledger.jsonl trail/ 2>/dev/null || true
+          cp -f state/done.json trail/ 2>/dev/null || true
+          cp -f state/pit-status.json trail/ 2>/dev/null || true
+          cp -f state/sandbox_claims.jsonl trail/ 2>/dev/null || true
+          git add trail/sync_ledger.jsonl trail/done.json trail/sandbox_claims.jsonl trail/pit-status.json 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "ledger: run ${{ github.run_id }}"
+            git pull --rebase origin main || true
+            git push || (sleep 8 && git pull --rebase origin main && git push) \
+              || echo "trail push deferred (race) — state cache carries it to next run"
+          fi
       - name: notify on failure
         if: failure()
         env:
@@ -164,17 +183,3 @@ jobs:
                              "\n常見原因：cookie 過期（同時會發 TFF GA: cookie expired）或上傳鏈路異常。")}
           requests.post("https://ntfy.sh/", data=json.dumps(msg), timeout=20)
           PY
-      - name: emit pit-status (protocol pit-status/1)
-        if: always()
-        run: python3 pit_report.py
-      - name: commit audit ledger (public trail)
-        if: always()
-        run: |
-          git config user.name "tff-bot"
-          git config user.email "b921603@users.noreply.github.com"
-          mkdir -p trail && cp -f state/sync_ledger.jsonl trail/ 2>/dev/null || true
-          cp -f state/done.json trail/ 2>/dev/null || true
-          cp -f state/pit-status.json trail/ 2>/dev/null || true
-          cp -f state/sandbox_claims.jsonl trail/ 2>/dev/null || true
-          git add trail/sync_ledger.jsonl trail/done.json trail/sandbox_claims.jsonl trail/pit-status.json 2>/dev/null || true
-          git diff --cached --quiet || (git commit -m "ledger: run ${{ github.run_id }}" && git pull --rebase && git push)
