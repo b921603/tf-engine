@@ -70,6 +70,15 @@ jobs:
           TFS_BASE: ${{ github.workspace }}/state
           TFS_BOOTSTRAP_BATCH: ${{ inputs.batch || '15' }}
         run: python3 tfs_engine.py bootstrap --limit "${TFS_BOOTSTRAP_BATCH:-15}"
+      - name: import smoke test (fail fast on name/syntax breaks)
+        run: |
+          python3 -c "
+          import tfs_engine
+          print('smoke OK: module imports clean')"
+          python3 -c "
+          import tfs_engine as T
+          assert callable(T.ff_bootstrap) and callable(T.post_article)
+          print('smoke OK: entrypoints present')"
       - name: run sync (new episodes)
         env:
           EUDIC_COOKIE: ${{ secrets.EUDIC_COOKIE }}
