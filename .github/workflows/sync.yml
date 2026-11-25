@@ -76,6 +76,13 @@ jobs:
           EUDIC_USER: smoke
           EUDIC_PASS: smoke
         run: |
+          python3 -m pip install pyflakes -q
+          if python3 -m pyflakes tfs_engine.py | grep -q "undefined name"; then
+            python3 -m pyflakes tfs_engine.py | grep "undefined name"
+            echo "undefined name(s) found — NameError-class mine defused pre-run"
+            exit 1
+          fi
+          echo "pyflakes OK: no undefined names"
           python3 -c "
           import tfs_engine
           print('smoke OK: module imports clean')"
