@@ -71,6 +71,10 @@ jobs:
           TFS_BOOTSTRAP_BATCH: ${{ inputs.batch || '15' }}
         run: python3 tfs_engine.py bootstrap --limit "${TFS_BOOTSTRAP_BATCH:-15}"
       - name: import smoke test (fail fast on name/syntax breaks)
+        env:                      # dummy: import-time presence check only — no secrets, no network
+          EUDIC_COOKIE: "smoke=dummy"
+          EUDIC_USER: smoke
+          EUDIC_PASS: smoke
         run: |
           python3 -c "
           import tfs_engine
