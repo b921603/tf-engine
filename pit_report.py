@@ -10,6 +10,8 @@ trail/pit-status.json 供 patrol 讀取。完成度以「官方集數」為分�
 import json, os, time
 
 BASE = os.environ.get("TFS_BASE", "state")
+RSS = "https://rss.art19.com/tim-ferriss-show"
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0"}
 
 
 def rj(p, d=None):
@@ -17,6 +19,18 @@ def rj(p, d=None):
         return json.load(open(p))
     except Exception:
         return d
+
+
+def rss_guids_live():
+    """活 RSS guid 集——烤目錄快照看不到官方下架，這裡補盲。"""
+    import re, requests
+    r = requests.get(RSS, headers=UA, timeout=90)
+    out = set()
+    for blk in re.findall(r"<item>(.*?)</item>", r.text or "", re.S):
+        g = re.search(r"<guid[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</guid>", blk, re.S)
+        if g:
+            out.add(g.group(1).strip())
+    return out
 
 
 def main():
@@ -40,6 +54,16 @@ def main():
             continue          # 官方音檔已遺失——例外不計債
         else:
             missing.append({"num": e.get("num"), "title": (e.get("title") or "")[:60]})
+    # 下架偵測：done 帳上有、活 RSS 已消失（唯讀報告——不動頻道任何檔案）
+    retired, retired_check = None, "ok"
+    try:
+        rg = rss_guids_live()
+        if len(rg) < len(done) - 5:
+            retired_check = "inconclusive (feed smaller than ledger — guard)"
+        else:
+            retired = sorted(set(done) - rg)
+    except Exception as ex:
+        retired_check = f"skip ({str(ex)[:40]})"
     avail = total - len(lost_ids)
     rep = {
         "protocol": "pit-status/1",
@@ -54,12 +78,17 @@ def main():
         "status": "complete" if not missing else "in_progress",
         "blocked_reason": f"audio-lost {len(lost_ids)} eps excluded" if lost_ids else None,
         "missing_sample": missing[:10],
+        "retired_count": len(retired) if retired is not None else None,
+        "retired_sample": [str((done.get(g) or {}).get("title") or g)[:50]
+                           for g in (retired or [])][:10],
+        "retired_check": retired_check,
         "notes": "completion = distinct official episodes in done ledger / available catalog; parts inflate article counts",
     }
     os.makedirs("trail", exist_ok=True)
     json.dump(rep, open("trail/pit-status.json", "w"), ensure_ascii=False, indent=1)
     print(f"pit-status: {rep['completed_eps']}/{rep['official_available']} "
-          f"completion={rep['completion']} missing={rep['true_missing']}")
+          f"completion={rep['completion']} missing={rep['true_missing']} "
+          f"retired={rep['retired_count'] if rep['retired_count'] is not None else '?'}")
 
 
 if __name__ == "__main__":
