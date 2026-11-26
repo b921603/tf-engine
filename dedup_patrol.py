@@ -20,6 +20,9 @@ from tfs_engine import (SES, req, raw_list, norm_title, tfs_channels,
                         auto_relogin, art_path, rj, wj, log, ntfy, GAP)
 
 MAX_DEL = 60                       # 單輪刪除上限（防爆量／防 bug 擴散）
+# 11-26 繼承審計缺口 D：dedup 覆蓋擴展——ob 等非 TFF 頻道經 DEDUP_EXTRA_CIDS 納入
+# （保留規則：帳本正主優先→無帳本記錄保留首筆；MAX_DEL/跳過防護同款適用）
+EXTRA_CIDS = [c.strip() for c in os.environ.get("DEDUP_EXTRA_CIDS", "").split(",") if c.strip()]
 DELETE_MODE = os.environ.get("DEDUP_DELETE", "") == "1"
 AUTH_URL = "https://my.eudic.net/ting/DeletePriveteMedia"
 
@@ -64,7 +67,9 @@ def delete_media(mid):
 def patrol():
     mids_kept, n_done = canonical_mids()
     log(f"dedup patrol: delete_mode={DELETE_MODE} ｜ done={n_done} ｜ canonical mids={len(mids_kept)}")
-    chans = tfs_channels()
+    chans = tfs_channels() + [(0, 0, c) for c in EXTRA_CIDS]
+    if EXTRA_CIDS:
+        log(f"dedup extra channels: {[c[:8] for c in EXTRA_CIDS]}（帳本正主僅覆蓋 TFF——extra 頻道保留首筆策略）")
     report = {"at": time.strftime("%F %T"), "mode": "delete" if DELETE_MODE else "dry",
               "channels": [], "deleted": 0, "deleted_list": [],
               "skipped": [], "remaining_dups": {}}
