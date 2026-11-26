@@ -16,6 +16,7 @@ import json, time, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from collections import defaultdict
 
+import requests
 from tfs_engine import (SES, req, raw_list, norm_title, tfs_channels,
                         auto_relogin, art_path, rj, wj, log, ntfy, GAP)
 
@@ -64,7 +65,120 @@ def delete_media(mid):
     return r.status_code == 200 and '"success":true' in (r.text or "").replace(" ", "")
 
 
+# ── sync↔dedup 聯動（11-26 用戶設計題）─────────────────────────────
+# 層①結構預防（sync 側，已上）：正確端點+(guid,part) 帳本+mids+標題掃描→不產生重複
+# 層②delta-guard：只在上傳有變（帳本指紋）時掃描——無 delta 秒退（成本≈2 API reads）
+# 層③範圍縮窄：只掃有上傳的頻道（tff=parts ledger cid 映射；ob=ob cid）
+# 層④canary 語義：無上傳卻見重複＝異常信號（外部寫入/bug）→report["anomaly"]
+# 層⑤週期後備：每 7 天強制全量清點（防 baseline 漂移）
+BASELINE = art_path("dedup_baseline.json")
+OB_LEDGER_API = ("https://api.github.com/repos/b921603/routines/contents/"
+                 "trail/done_ob.json")
+
+
+def _latest(recs, key):
+    ts = [str(r.get(key) or "") for r in recs.values() if r.get(key)]
+    return max(ts) if ts else None
+
+
+def tff_latest_and_cids():
+    done = rj(art_path("done.json"), {}) or {}
+    latest = _latest(done, "ts")
+    cids = set()
+    try:
+        pl = art_path("parts_ledger.jsonl")
+        if os.path.exists(pl):
+            for line in open(pl, encoding="utf-8"):
+                try:
+                    j = json.loads(line)
+                    if j.get("cid") and (not latest or j.get("ts", "") > (
+                            _BASE.get("tff_ts") or "")):
+                        cids.add(j["cid"])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return latest, cids
+
+
+def ob_latest():
+    """routines repo 的 ob 帳本最新 ts（跨 repo：GH_PAT）。讀不到→None（fail-safe＝全掃）。"""
+    pat = os.environ.get("GH_PAT", "")
+    if not pat:
+        return None
+    try:
+        h = {"Authorization": "Bearer " + pat}
+        r = requests.get(OB_LEDGER_API, headers=h, timeout=30)
+        if r.status_code != 200:
+            return None
+        import base64 as _b
+        raw = _b.b64decode(r.json().get("content", "")).decode("utf-8", "ignore")
+        return _latest(json.loads(raw), "at")
+    except Exception as ex:
+        log(f"  ob ledger fetch err: {str(ex)[:60]}")
+        return None
+
+
+_BASE = {}
+
+
+def _deltas():
+    global _BASE
+    _BASE = rj(BASELINE, {}) or {}
+    tff_ts, tff_cids = tff_latest_and_cids()
+    ob_ts = ob_latest()
+    full = False
+    try:
+        lf = _BASE.get("last_full")
+        full = (not lf) or (time.time() - time.mktime(
+            time.strptime(lf, "%F %T")) > 7 * 86400)
+    except Exception:
+        full = True
+    tff_delta = bool(tff_ts and tff_ts != (_BASE.get("tff_ts") or "")) or not tff_ts
+    ob_delta = bool(ob_ts and ob_ts != (_BASE.get("ob_ts") or ""))
+    if ob_ts is None and not _BASE.get("ob_ts"):
+        ob_delta = False                      # 帳本未落地（run 進行中）——無 delta
+    if os.environ.get("DEDUP_FULL") == "1":
+        full = True
+    return {"tff_ts": tff_ts, "ob_ts": ob_ts, "tff_cids": tff_cids,
+            "tff_delta": tff_delta, "ob_delta": ob_delta, "full": full}
+
+
 def patrol():
+    d = _deltas()
+    log(f"delta-guard: tff_delta={d['tff_delta']} ob_delta={d['ob_delta']} "
+        f"full={d['full']}（tff_ts={d['tff_ts']} ob_ts={d['ob_ts']}）")
+    if not d["tff_delta"] and not d["ob_delta"] and not d["full"]:
+        _BASE["checked_at"] = time.strftime("%F %T")
+        wj(BASELINE, _BASE)
+        log("dedup: 無上傳 delta 且未到期全量——秒退（層②聯動）")
+        wj(art_path("dup_report.json"),
+           {"at": time.strftime("%F %T"), "mode": "delta-skip",
+            "note": "無上傳活動——dedup 依設計不掃描"})
+        return
+    mids_kept, n_done = canonical_mids()
+    log(f"dedup patrol: delete_mode={DELETE_MODE} ｜ done={n_done} ｜ canonical mids={len(mids_kept)}")
+    chans = []
+    if d["full"]:
+        chans = tfs_channels() + [(0, 0, c) for c in EXTRA_CIDS]
+        _BASE["last_full"] = time.strftime("%F %T")
+    else:
+        if d["tff_delta"]:
+            touched = d["tff_cids"]
+            tff_all = dict((cid, (a, b, cid)) for _a, _b, cid in tfs_channels())
+            picked = [tff_all[c] for c in touched if c in tff_all] or \
+                (tfs_channels() if not touched else [])
+            chans += picked
+            if not touched:
+                log("  tff delta 但 parts ledger 無 cid 映射→全 TFF 範圍掃描")
+        if d["ob_delta"]:
+            chans += [(0, 0, c) for c in EXTRA_CIDS]
+    if not chans:
+        _BASE["checked_at"] = time.strftime("%F %T")
+        wj(BASELINE, _BASE)
+        log("dedup: delta 來源無可掃頻道——退場")
+        return
+    log(f"掃描範圍：{len(chans)} 頻道（層③縮窄）")
     mids_kept, n_done = canonical_mids()
     log(f"dedup patrol: delete_mode={DELETE_MODE} ｜ done={n_done} ｜ canonical mids={len(mids_kept)}")
     chans = tfs_channels() + [(0, 0, c) for c in EXTRA_CIDS]
@@ -126,6 +240,13 @@ def patrol():
         time.sleep(3)
     report["deleted"] = sum(1 for x in report["deleted_list"] if x.get("done"))
     report["pending_delete"] = sum(1 for x in report["deleted_list"] if not x.get("done"))
+    if report["deleted_list"] and not (d["tff_delta"] or d["ob_delta"]):
+        report["anomaly"] = "無本引擎上傳 delta 卻發現重複＝外部寫入信號（層④canary）——請查是否人為/其他代理上傳"
+        log(f"  ⚠ {report['anomaly']}")
+    _BASE.update({"tff_ts": d["tff_ts"] or _BASE.get("tff_ts"),
+                  "ob_ts": d["ob_ts"] or _BASE.get("ob_ts"),
+                  "checked_at": time.strftime("%F %T")})
+    wj(BASELINE, _BASE)
     wj(art_path("dup_report.json"), report)
     body = (f"模式={report['mode']}｜刪除 {report['deleted']} 份"
             f"{'（額度用盡，下輪續）' if quota == 0 else ''}"

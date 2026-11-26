@@ -2,8 +2,10 @@ name: dedup-patrol
 
 on:
   schedule:
-    - cron: "15 * * * *"    # 錯峰於 tff(:27/:57)/htf(:03/:33)/patrol(05:30TPE) 之外
-    - cron: "45 * * * *"
+    - cron: "15 0,6,12,18 * * *"   # 6h 後備巡檢（delta-guard 無上傳時秒退，成本≈0）
+  workflow_run:
+    workflows: ["tff-sync", "tff-rotate", "tff-keepalive"]   # sync 完成即觸發（層②聯動：delta-guard 決定是否真掃）
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -32,6 +34,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           DEDUP_DELETE: "1"
           DEDUP_EXTRA_CIDS: "372fa0de-b091-4d19-89f8-571e3b33b546"   # On Being（11-26 繼承審計）
+          GH_PAT: ${{ secrets.GH_PAT }}   # 跨 repo 讀 ob 帳本指紋（層②聯動）
       - name: commit dedup trail
         if: always()
         run: |
@@ -39,5 +42,5 @@ jobs:
           git config user.email "b921603@users.noreply.github.com"
           mkdir -p trail && cp -f state/dup_report.json trail/ 2>/dev/null || true
           cp -f state/dedup_actions.jsonl trail/ 2>/dev/null || true
-          git add trail/dup_report.json trail/dedup_actions.jsonl 2>/dev/null || true
+          git add trail/dup_report.json trail/dedup_actions.jsonl state/dedup_baseline.json 2>/dev/null || true
           git diff --cached --quiet || (git commit -m "dedup: run ${{ github.run_id }}" && git pull --rebase && git push)
