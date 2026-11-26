@@ -190,7 +190,7 @@ def patrol():
     log(f"dedup patrol: delete_mode={DELETE_MODE} ｜ done={n_done} ｜ canonical mids={len(mids_kept)}")
     chans = []
     if d["full"]:
-        chans = tfs_channels() + [(0, 0, c) for c in EXTRA_CIDS]
+        chans = tfs_channels() + [(0, 0, c) for c in ob_channels()]
         _BASE["last_full"] = time.strftime("%F %T")
     else:
         if d["tff_delta"]:
