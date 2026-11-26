@@ -72,8 +72,7 @@ def delete_media(mid):
 # 層④canary 語義：無上傳卻見重複＝異常信號（外部寫入/bug）→report["anomaly"]
 # 層⑤週期後備：每 7 天強制全量清點（防 baseline 漂移）
 BASELINE = art_path("dedup_baseline.json").replace("state/", "trail/")   # trail/ 才入 repo（state/done.json 不入 repo 同款教訓——baseline 必須跨 run 存活）
-OB_LEDGER_API = ("https://api.github.com/repos/b921603/routines/contents/"
-                 "trail/done_ob.json")
+OB_LEDGER_API = ("https://api.github.com/repos/b921603/routines/contents/"                 "trail/done_ob.json")
 
 
 def _latest(recs, key):
@@ -120,6 +119,30 @@ def ob_latest():
     except Exception as ex:
         log(f"  ob ledger fetch err: {str(ex)[:60]}")
         return None
+
+
+OB_CHANNELS_API = ("https://api.github.com/repos/b921603/routines/contents/"
+                   "trail/ob_channels.json")
+
+
+def ob_channels():
+    """routines 頻道登記簿（跨 repo：GH_PAT）→ [cid]；讀不到→fallback EXTRA_CIDS。
+    輪轉開新頻後 dedup 自動跟進（11-26 用戶裁定：每 100 集開新頻）。"""
+    pat = os.environ.get("GH_PAT", "")
+    if not pat:
+        return EXTRA_CIDS
+    try:
+        h = {"Authorization": "Bearer " + pat}
+        r = requests.get(OB_CHANNELS_API, headers=h, timeout=30)
+        if r.status_code != 200:
+            return EXTRA_CIDS
+        import base64 as _b
+        raw = _b.b64decode(r.json().get("content", "")).decode("utf-8", "ignore")
+        cids = [x.get("cid") for x in json.loads(raw or "[]") if x.get("cid")]
+        return cids or EXTRA_CIDS
+    except Exception as ex:
+        log(f"  ob channels fetch err: {str(ex)[:60]}")
+        return EXTRA_CIDS
 
 
 _BASE = {}
@@ -179,7 +202,7 @@ def patrol():
             if not touched:
                 log("  tff delta 但 parts ledger 無 cid 映射→全 TFF 範圍掃描")
         if d["ob_delta"]:
-            chans += [(0, 0, c) for c in EXTRA_CIDS]
+            chans += [(0, 0, c) for c in ob_channels()]
     if not chans:
         _BASE["checked_at"] = time.strftime("%F %T")
         wj(BASELINE, _BASE)
@@ -188,8 +211,9 @@ def patrol():
     log(f"掃描範圍：{len(chans)} 頻道（層③縮窄）")
     mids_kept, n_done = canonical_mids()
     log(f"dedup patrol: delete_mode={DELETE_MODE} ｜ done={n_done} ｜ canonical mids={len(mids_kept)}")
-    chans = tfs_channels() + [(0, 0, c) for c in EXTRA_CIDS]
-    if EXTRA_CIDS:
+    obc = ob_channels()
+    chans = tfs_channels() + [(0, 0, c) for c in obc]
+    if EXTRA_CIDS or obc:
         log(f"dedup extra channels: {[c[:8] for c in EXTRA_CIDS]}（帳本正主僅覆蓋 TFF——extra 頻道保留首筆策略）")
     report = {"at": time.strftime("%F %T"), "mode": "delete" if DELETE_MODE else "dry",
               "channels": [], "deleted": 0, "deleted_list": [],
