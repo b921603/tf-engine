@@ -82,11 +82,14 @@ def _latest(recs, key):
 
 
 def tff_latest_and_cids():
-    done = rj(art_path("done.json"), {}) or {}
+    # state/ 不入 repo（本 repo .gitignore）——canonical_mids 同款 trail fallback
+    done = rj(art_path("done.json"), None)
+    if done is None:
+        done = rj(art_path("done.json").replace("state/", "trail/"), {}) or {}
     latest = _latest(done, "at") or _latest(done, "ts")   # tff 帳本欄位＝at（ob 同款；11-26 聯動實測修正）
     cids = set()
     try:
-        pl = art_path("parts_ledger.jsonl")
+        pl = art_path("parts_ledger.jsonl").replace("state/", "trail/")
         if os.path.exists(pl):
             for line in open(pl, encoding="utf-8"):
                 try:
