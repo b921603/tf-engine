@@ -83,7 +83,7 @@ def _latest(recs, key):
 
 def tff_latest_and_cids():
     done = rj(art_path("done.json"), {}) or {}
-    latest = _latest(done, "ts")
+    latest = _latest(done, "at") or _latest(done, "ts")   # tff 帳本欄位＝at（ob 同款；11-26 聯動實測修正）
     cids = set()
     try:
         pl = art_path("parts_ledger.jsonl")

@@ -43,4 +43,13 @@ jobs:
           mkdir -p trail && cp -f state/dup_report.json trail/ 2>/dev/null || true
           cp -f state/dedup_actions.jsonl trail/ 2>/dev/null || true
           git add trail/dup_report.json trail/dedup_actions.jsonl trail/dedup_baseline.json 2>/dev/null || true
-          git diff --cached --quiet || (git commit -m "dedup: run ${{ github.run_id }}" && git pull --rebase && git push)
+          git diff --cached --quiet || git commit -m "dedup: run ${{ github.run_id }}"
+          for i in 1 2 3; do
+            if git pull --rebase origin main; then
+              git push origin main && break
+            else
+              git rebase --abort 2>/dev/null || true
+              sleep 5
+            fi
+          done
+          git push origin main || echo "push skipped (trail race) — next run carries the report"
