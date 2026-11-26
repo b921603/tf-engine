@@ -134,7 +134,7 @@ def _deltas():
     try:
         lf = _BASE.get("last_full")
         full = (not lf) or (time.time() - time.mktime(
-            time.strptime(lf, "%F %T")) > 7 * 86400)
+            time.strptime(lf, "%Y-%m-%d %H:%M:%S")) > 7 * 86400)   # strptime 不支援 %F
     except Exception:
         full = True
     tff_delta = bool(tff_ts and tff_ts != (_BASE.get("tff_ts") or "")) or not tff_ts
@@ -149,8 +149,12 @@ def _deltas():
 
 def patrol():
     d = _deltas()
+    try:
+        _dn = len(rj(art_path("done.json").replace("state/", "trail/"), {}) or {})
+    except Exception:
+        _dn = -1
     log(f"delta-guard: tff_delta={d['tff_delta']} ob_delta={d['ob_delta']} "
-        f"full={d['full']}（tff_ts={d['tff_ts']} ob_ts={d['ob_ts']}）")
+        f"full={d['full']}（tff_ts={d['tff_ts']} ob_ts={d['ob_ts']}｜tff 帳本 {_dn} 條）")
     if not d["tff_delta"] and not d["ob_delta"] and not d["full"]:
         _BASE["checked_at"] = time.strftime("%F %T")
         wj(BASELINE, _BASE)
