@@ -172,7 +172,7 @@ def patrol():
     else:
         if d["tff_delta"]:
             touched = d["tff_cids"]
-            tff_all = dict((cid, (a, b, cid)) for _a, _b, cid in tfs_channels())
+            tff_all = {c_: (a_, b_, c_) for a_, b_, c_ in tfs_channels()}
             picked = [tff_all[c] for c in touched if c in tff_all] or \
                 (tfs_channels() if not touched else [])
             chans += picked
