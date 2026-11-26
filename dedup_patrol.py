@@ -71,7 +71,7 @@ def delete_media(mid):
 # 層③範圍縮窄：只掃有上傳的頻道（tff=parts ledger cid 映射；ob=ob cid）
 # 層④canary 語義：無上傳卻見重複＝異常信號（外部寫入/bug）→report["anomaly"]
 # 層⑤週期後備：每 7 天強制全量清點（防 baseline 漂移）
-BASELINE = art_path("dedup_baseline.json")
+BASELINE = art_path("dedup_baseline.json").replace("state/", "trail/")   # trail/ 才入 repo（state/done.json 不入 repo 同款教訓——baseline 必須跨 run 存活）
 OB_LEDGER_API = ("https://api.github.com/repos/b921603/routines/contents/"
                  "trail/done_ob.json")
 
