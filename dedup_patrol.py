@@ -121,8 +121,27 @@ def ob_latest():
         return None
 
 
+OB_PIT_API = ("https://api.github.com/repos/b921603/routines/contents/"
+              "trail/ob-pit.json")            # drain 未竟旗標（status=in_progress）
 OB_CHANNELS_API = ("https://api.github.com/repos/b921603/routines/contents/"
                    "trail/ob_channels.json")
+
+
+def ob_pit_in_progress():
+    """routines 的 ob-pit.json status==in_progress？讀不到→False（保守不強掃）。"""
+    pat = os.environ.get("GH_PAT", "")
+    if not pat:
+        return False
+    try:
+        h = {"Authorization": "Bearer " + pat}
+        r = requests.get(OB_PIT_API, headers=h, timeout=30)
+        if r.status_code != 200:
+            return False
+        import base64 as _b
+        pj = json.loads(_b.b64decode(r.json().get("content", "")).decode("utf-8", "ignore"))
+        return pj.get("status") == "in_progress"
+    except Exception:
+        return False
 
 
 def ob_channels():
@@ -164,6 +183,10 @@ def _deltas():
     ob_delta = bool(ob_ts and ob_ts != (_BASE.get("ob_ts") or ""))
     if ob_ts is None and not _BASE.get("ob_ts"):
         ob_delta = False                      # 帳本未落地（run 進行中）——無 delta
+    if ob_pit_in_progress():
+        ob_delta = True                       # drain 肉搏中：ob 帳本 run 尾才 commit——
+                                              # mid-run dups 對指紋全盲（11-27 Evangelicals
+                                              # ×10 實證）→ backlog 未竟前每輪強制掃 ob
     if os.environ.get("DEDUP_FULL") == "1":
         full = True
     return {"tff_ts": tff_ts, "ob_ts": ob_ts, "tff_cids": tff_cids,
